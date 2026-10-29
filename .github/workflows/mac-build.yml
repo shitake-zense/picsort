@@ -1,0 +1,38 @@
+name: Build PixSort for Mac
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: Apple-Silicon
+            runner: macos-15
+          - arch: Intel
+            runner: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build app and package
+        run: bash ./Build-Mac.command
+      - name: Check bundle and archive
+        run: |
+          test -x dist/PixSort.app/Contents/MacOS/PixSort
+          file dist/PixSort.app/Contents/MacOS/PixSort
+          plutil -lint dist/PixSort.app/Contents/Info.plist
+          unzip -t dist/PixSort-Mac.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PixSort-Mac-${{ matrix.arch }}
+          path: dist/PixSort-Mac.zip
+          if-no-files-found: error

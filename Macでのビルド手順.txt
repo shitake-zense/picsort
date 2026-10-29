@@ -1,0 +1,23 @@
+ピクソート 0.12 — Mac版を作る方へ
+
+これは完成済みアプリではなく、Mac版をビルドするためのソース一式です。
+Mac（AppleシリコンまたはIntel）と Python 3.12 推奨、開発用ライブラリの取得時にはインターネット接続が必要です。アプリの実行時はオフラインで動作します。
+この手順で作ったアプリは、ビルドしたMacのCPUに対応します。異なるCPUのMacでは別途ビルド・確認してください。
+
+1. ZIPを展開し、ターミナルを開きます。
+2. ターミナルに cd と半角スペースを入力し、展開した「PixSort-v0.12-Mac-build-kit」フォルダをドラッグして Enter を押します。
+3. 次の2行を順に入力します。
+
+   chmod +x ./Build-Mac.command
+   ./Build-Mac.command
+
+4. 正常に完了すると、dist/PixSort.app と dist/PixSort-Mac.zip ができます。
+5. 実際に配布する前に、テスト用の写真で、起動・写真表示・振り分け・ごみ箱への移動・再起動後の記録を確認してください。
+
+作業記録の保存先：~/Library/Application Support/PixSort
+アプリはAppleによる開発者署名・公証をしていません。Macのセキュリティ設定により起動を制限されることがあります。
+Appleの説明: https://support.apple.com/ja-jp/102445
+Pythonの入手先: https://www.python.org/downloads/macos/
+ビルドが失敗した場合はターミナルのエラーを控えてください。
+
+Macが手元にない場合、同梱の .github/workflows/mac-build.yml を使い、GitHub ActionsのMacランナーでビルドする方法もあります。ソースをGitHubにアップロードする必要があります。写真や作業記録は含めないでください。Actionsタブから「Build PixSort for Mac」を手動実行すると、Appleシリコン用とIntel用の成果物をダウンロードできます。GitHubアカウントの利用枠・料金が適用されます。完成品の操作はMac実機で確認してください。

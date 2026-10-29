@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+KomaData/
+dist/
+build/
+*.spec
