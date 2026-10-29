@@ -31,6 +31,14 @@ jobs:
           file dist/PixSort.app/Contents/MacOS/PixSort
           plutil -lint dist/PixSort.app/Contents/Info.plist
           unzip -t dist/PixSort-Mac.zip
+      - name: Smoke test packaged app with sample images
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PIXSORT_DATA_DIR: ${{ runner.temp }}/pixsort-test
+        run: |
+          python -c 'import subprocess; subprocess.run(["dist/PixSort.app/Contents/MacOS/PixSort", "--folder", "tests/fixtures", "--capture", "smoke.png"], check=True, timeout=60)'
+          test -s smoke.png
+          python -c 'import os, sqlite3, json; db=sqlite3.connect(os.path.join(os.environ["PIXSORT_DATA_DIR"], "sessions.sqlite3")); rows=db.execute("SELECT state FROM projects").fetchall(); assert len(rows)==1 and json.loads(rows[0][0]).get("cursor"), "Sample photo not loaded"'
       - uses: actions/upload-artifact@v4
         with:
           name: PixSort-Mac-${{ matrix.arch }}
