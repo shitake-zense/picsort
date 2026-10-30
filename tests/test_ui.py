@@ -235,6 +235,127 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn(target, dialog.checked)
         dialog.reject()
 
+    def _similar_dialog_with_copies(self):
+        from similar_ui import SimilarDialog
+        for i in range(3): shutil.copy2(self.photos / "DEMO_001.jpg", self.photos / f"DEMO_001_copy{i}.jpg")
+        self.window.refresh_folder(); self.wait_for(lambda: not self.window.scanning)
+        dialog = SimilarDialog(self.window, list(self.window.visible))
+        dialog.show(); dialog.mode.setCurrentIndex(1); dialog.start_search()
+        self.wait_for(lambda: not dialog.running)
+        self.wait_for(lambda: dialog.items.count() >= 4 and not dialog.preview.image.isNull())
+        return dialog
+
+    def test_similarity_cards_keep_size_before_and_after_thumbnail_loading(self):
+        dialog = self._similar_dialog_with_copies()
+        self.application.processEvents()
+        for i in range(dialog.items.count()):
+            rect = dialog.items.visualItemRect(dialog.items.item(i))
+            self.assertGreaterEqual(rect.height(), 130)
+            self.assertGreaterEqual(rect.width(), 140)
+        dialog.reject()
+
+    def test_similarity_preview_zoom_fullscreen_and_restore(self):
+        dialog = self._similar_dialog_with_copies()
+        initial = dialog.preview.path
+        dialog.zoom_active(1.25)
+        self.assertGreater(dialog.preview.zoom_scale, 1.0)
+        self.wait_for(lambda: not dialog.preview.image.isNull() and (initial, "full") in dialog.image_cache)
+        dialog.toggle_dialog_fullscreen()
+        self.assertTrue(dialog.isFullScreen()); self.assertTrue(dialog.dialog_fullscreen)
+        dialog.toggle_photo_fullscreen()
+        self.assertTrue(dialog.photo_only); self.assertFalse(dialog.center_panel.isVisible())
+        self.assertTrue(dialog.preview.isVisible()); self.assertTrue(dialog.exit_photo_button.isVisible())
+        dialog.reject()
+        self.assertFalse(dialog.photo_only); self.assertTrue(dialog.isFullScreen())
+        self.assertTrue(dialog.center_panel.isVisible()); self.assertEqual(dialog.preview.path, initial)
+        dialog.reject(); self.assertFalse(dialog.dialog_fullscreen)
+        dialog.reject()
+
+    def test_similarity_compare_stays_in_results_and_keeps_checks(self):
+        dialog = self._similar_dialog_with_copies()
+        selected=[]
+        for i in (0, 1):
+            item = dialog.items.item(i); selected.append(item.data(Qt.ItemDataRole.UserRole))
+            item.setCheckState(Qt.CheckState.Checked)
+        dialog.compare_photos()
+        self.assertTrue(dialog.compare_mode); self.assertTrue(dialog.isVisible())
+        self.assertEqual([dialog.preview.path, dialog.compare_canvas.path], selected)
+        self.wait_for(lambda: not dialog.compare_canvas.image.isNull())
+        dialog.select_compare_side(1)
+        self.assertIs(dialog.active_canvas, dialog.compare_canvas)
+        before = dialog.preview.path; dialog.navigate_independent(1)
+        self.assertEqual(dialog.preview.path, before)
+        dialog.exit_compare()
+        self.assertFalse(dialog.compare_mode); self.assertEqual(dialog.checked, set(selected))
+        self.assertGreater(len(dialog.groups), 0); dialog.reject()
+
+    def test_similarity_compare_navigation_stays_inside_current_group(self):
+        dialog = self._similar_dialog_with_copies()
+        group = dialog.groups[dialog.group_list.currentRow()]
+        for i in (len(group)-2, len(group)-1): dialog.items.item(i).setCheckState(Qt.CheckState.Checked)
+        dialog.compare_photos()
+        before = [dialog.preview.path, dialog.compare_canvas.path]
+        dialog.navigate_preview(1, independent=False)
+        self.assertEqual([dialog.preview.path, dialog.compare_canvas.path], before)
+        dialog.select_compare_side(1); dialog.navigate_independent(1)
+        self.assertEqual(dialog.compare_canvas.path, group[-1])
+        dialog.reject()
+
+    def test_similarity_preview_controls_fit_and_mouse_wheel_zooms(self):
+        dialog = self._similar_dialog_with_copies()
+        dialog.resize(740, 450); self.application.processEvents()
+        for control in (dialog.prev_button, dialog.next_button, dialog.zoom_out_button,
+                        dialog.zoom_in_button, dialog.actual_button, dialog.properties_button):
+            self.assertTrue(control.isVisible())
+            self.assertGreaterEqual(control.width(), 28)
+            point = control.mapTo(dialog, control.rect().bottomRight())
+            self.assertLess(point.x(), dialog.width()); self.assertLess(point.y(), dialog.height())
+        pos = dialog.preview.rect().center()
+        wheel = QWheelEvent(QPointF(pos), QPointF(dialog.preview.mapToGlobal(pos)), QPoint(0, 0), QPoint(0, 120),
+                            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+        QApplication.sendEvent(dialog.preview, wheel)
+        self.assertGreater(dialog.preview.zoom_scale, 1.0)
+        dialog.reject()
+
+    def test_similarity_destination_key_acts_on_preview_and_advances(self):
+        dialog = self._similar_dialog_with_copies()
+        original = dialog.preview.path
+        dialog.activateWindow(); dialog.preview.setFocus(); self.application.processEvents()
+        QTest.keyClick(dialog.preview, Qt.Key.Key_1)
+        self.application.processEvents()
+        self.assertEqual(self.window.state["decisions"][original]["action"], "file")
+        self.assertNotEqual(dialog.preview.path, original)
+        self.assertTrue(Path(original).exists())
+        dialog.reject()
+
+    def test_similarity_preview_and_batch_actions_remain_pending(self):
+        dialog = self._similar_dialog_with_copies()
+        original = dialog.preview.path; data = Path(original).read_bytes()
+        dialog.mark_one(original, "trash", advance=True)
+        self.assertEqual(self.window.state["decisions"][original]["action"], "trash")
+        self.assertNotEqual(dialog.preview.path, original)
+        dialog.clear_one(original); self.assertNotIn(original, self.window.pending())
+        dialog.undo(); self.assertEqual(self.window.state["decisions"][original]["action"], "trash")
+        for i in (1, 2): dialog.items.item(i).setCheckState(Qt.CheckState.Checked)
+        selected = set(dialog.checked); dialog.assign_checked(0)
+        destination = self.window.state["destinations"][0]["path"]
+        self.assertTrue(all(self.window.state["decisions"][p]["destination"] == destination for p in selected))
+        self.assertEqual(Path(original).read_bytes(), data)
+        dialog.reject()
+
+    def test_main_toolbar_is_one_row_at_small_and_large_widths(self):
+        for width in (740, 1300):
+            self.window.resize(width, 650); self.application.processEvents()
+            controls = [self.window.filter_combo, self.window.single_button,
+                        self.window.compare_button, self.window.grid_button, self.window.mode_combo]
+            if width < 1200: controls.append(self.window.tools_button)
+            else: controls.extend((self.window.property_button, self.window.crop_button, self.window.similar_button))
+            coords = [widget.mapTo(self.window, QPoint(0, 0)).y() for widget in controls]
+            self.assertLess(max(coords) - min(coords), 5)
+            for widget in controls:
+                self.assertTrue(widget.isVisible())
+                self.assertLess(widget.mapTo(self.window, widget.rect().bottomRight()).x(), self.window.width())
+
     def test_similar_two_photo_comparison_restores_filtered_photos(self):
         self.window.make_decisions([self.paths[0]], "trash")
         self.window.filter_combo.setCurrentIndex(1)
@@ -1166,7 +1287,8 @@ class WorkflowTests(unittest.TestCase):
         self.application.processEvents()
         self.assertTrue(self.window.compare_mode)
         self.assertTrue(self.window.pane_labels[0].isVisible())
-        self.assertTrue(self.window.pin_button.isVisible())
+        self.assertTrue(self.window.pin_button.isVisible() or
+                        (self.window.tools_button.isVisible() and self.window.pin_action.isEnabled()))
 
     def test_previous_database_is_copied_once_even_with_wal_open(self):
         old = self.root / 'legacy-state'

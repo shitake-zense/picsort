@@ -28,7 +28,7 @@ from core import SUPPORTED, Store, apply_decision, fingerprint, is_within
 from photo_tools import PropertyDialog, CropDialog, HelpDialog
 from similar_ui import SimilarDialog
 
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets"
 
 
@@ -987,40 +987,42 @@ class Window(QMainWindow):
         content.setContentsMargins(10, 8, 10, 6)
         content.setSpacing(6)
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(5)
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(["すべての写真", "未確認", "削除候補", "振り分け予定", "保留"])
         self.filter_combo.currentIndexChanged.connect(self.rebuild_views)
         toolbar.addWidget(self.filter_combo)
         self.single_button = button("1枚", self.show_single)
         self.compare_button = button("2枚比較", self.show_compare)
-        self.grid_button = button("▦  チェック一覧", lambda: self.set_view(True))
+        self.grid_button = button("チェック一覧", lambda: self.set_view(True))
         for item in (self.single_button, self.compare_button, self.grid_button):
-            item.setObjectName("segment")
-            item.setCheckable(True)
-            toolbar.addWidget(item)
+            item.setObjectName("segment"); item.setCheckable(True); toolbar.addWidget(item)
         self.single_button.setChecked(True)
         self.pin_button = button("左を固定", self.toggle_pin, "quiet")
-        self.pin_button.setVisible(False)
-        toolbar.addWidget(self.pin_button)
-        toolbar.addStretch()
-        content.addLayout(toolbar)
-        tools_row = QHBoxLayout()
-        self.property_button = button("ⓘ  プロパティ", self.show_properties)
+        self.pin_button.hide(); toolbar.addWidget(self.pin_button)
+        self.property_button = button("プロパティ", self.show_properties)
         self.crop_button = button("切り抜き", self.show_crop)
         self.similar_button = button("似た写真を探す", self.show_similar)
         self.property_button.setToolTip("操作中の写真の情報を表示")
         self.crop_button.setToolTip("操作中の写真を別ファイルに切り抜く")
-        tools_row.addWidget(self.property_button)
-        tools_row.addWidget(self.crop_button)
-        tools_row.addWidget(self.similar_button)
-        tools_row.addStretch()
+        for item in (self.property_button, self.crop_button, self.similar_button): toolbar.addWidget(item)
+        self.tools_button = QPushButton("ツール")
+        self.tools_menu = QMenu(self.tools_button)
+        self.property_action = self.tools_menu.addAction("プロパティ", self.show_properties)
+        self.crop_action = self.tools_menu.addAction("切り抜き", self.show_crop)
+        self.similar_action = self.tools_menu.addAction("似た写真を探す", self.show_similar)
+        self.pin_action = self.tools_menu.addAction("左を固定 / 解除", self.toggle_pin)
+        self.tools_button.setMenu(self.tools_menu); toolbar.addWidget(self.tools_button)
+        toolbar.addStretch()
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["確定時：移動", "確定時：コピー"])
+        self.mode_combo.setToolTip("整理を反映するときに移動するかコピーするかを選びます")
         self.mode_combo.currentIndexChanged.connect(self.mode_changed)
-        tools_row.addWidget(self.mode_combo)
+        toolbar.addWidget(self.mode_combo)
         self.toolbar_widgets = [self.filter_combo, self.single_button, self.compare_button,
-                                self.grid_button, self.pin_button, self.property_button, self.crop_button, self.similar_button, self.mode_combo]
-        content.addLayout(tools_row)
+                                self.grid_button, self.pin_button, self.property_button, self.crop_button,
+                                self.similar_button, self.tools_button, self.mode_combo]
+        content.addLayout(toolbar)
         info = QHBoxLayout()
         self.file_label = label("フォルダを開いて写真を選びましょう")
         self.file_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -1665,7 +1667,7 @@ class Window(QMainWindow):
         self.grid_button.setChecked(grid)
         self.single_button.setChecked(not grid and not self.compare_mode)
         self.compare_button.setChecked(not grid and self.compare_mode)
-        self.pin_button.setVisible(not grid and self.compare_mode and not self.photo_fullscreen)
+        self.pin_button.setVisible(not grid and self.compare_mode and not self.photo_fullscreen and self.width() >= 1200)
         self.pane_wrappers[1].setVisible(self.compare_mode)
         for pane_label in self.pane_labels:
             pane_label.setVisible(self.compare_mode and not self.photo_fullscreen)
@@ -1674,7 +1676,24 @@ class Window(QMainWindow):
         self.previous_button.setVisible(not grid and not self.photo_fullscreen)
         self.next_button.setVisible(not grid and not self.photo_fullscreen)
         self.refresh_current()
+        self.update_toolbar()
         QTimer.singleShot(50, self.request_thumbnails)
+
+    def update_toolbar(self):
+        compact = self.width() < 1200
+        active = not self.photo_fullscreen
+        for widget in (self.property_button, self.crop_button, self.similar_button):
+            widget.setVisible(active and not compact)
+        self.tools_button.setVisible(active and compact)
+        self.pin_button.setVisible(active and not compact and self.compare_mode and self.stack.currentIndex() == 0)
+        self.compare_button.setText("比較" if compact else "2枚比較")
+        self.grid_button.setText("一覧" if compact else "チェック一覧")
+        self.compare_button.setToolTip("2枚比較")
+        self.grid_button.setToolTip("チェック一覧")
+        self.filter_combo.setItemText(0, "すべて" if compact else "すべての写真")
+        self.mode_combo.setItemText(0, "移動" if compact else "確定時：移動")
+        self.mode_combo.setItemText(1, "コピー" if compact else "確定時：コピー")
+        self.pin_action.setEnabled(self.compare_mode and self.stack.currentIndex() == 0 and self.ready())
 
     def toggle_app_fullscreen(self):
         if self.photo_fullscreen:
@@ -2332,6 +2351,8 @@ class Window(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "brand_tagline"):
             self.brand_tagline.setVisible(self.width() >= 980 and not self.photo_fullscreen)
+        if hasattr(self, "tools_button") and hasattr(self, "stack"):
+            self.update_toolbar()
         if hasattr(self, "first_overlay") and self.photo_fullscreen:
             QTimer.singleShot(0, self.position_first_overlay)
         QTimer.singleShot(80, self.request_thumbnails)
@@ -2554,6 +2575,10 @@ class Window(QMainWindow):
         self.property_button.setEnabled(self.ready())
         self.crop_button.setEnabled(self.ready())
         self.similar_button.setEnabled(self.ready() and len(self.visible) >= 2)
+        self.property_action.setEnabled(self.ready())
+        self.crop_action.setEnabled(self.ready())
+        self.similar_action.setEnabled(self.ready() and len(self.visible) >= 2)
+        self.pin_action.setEnabled(self.ready() and self.compare_mode and self.stack.currentIndex() == 0)
         self.parent_button.setEnabled(self.ready() and Path(self.root).parent != Path(self.root))
         self.folder_list.setEnabled(self.ready())
         self.create_folder_button.setEnabled(self.ready())
@@ -2873,7 +2898,8 @@ def main():
         migrated = False
         if (getattr(sys, "frozen", False) and "PIXSORT_DATA_DIR" not in os.environ and "KOMA_DATA_DIR" not in os.environ):
             parent = application_directory().parent
-            for previous in (parent / "PixSort-v0.13-Windows" / "PixSortData",
+            for previous in (parent / "PixSort-v0.14-Windows" / "PixSortData",
+                             parent / "PixSort-v0.13-Windows" / "PixSortData",
                              parent / "PixSort-v0.12-Windows" / "PixSortData",
                              parent / "PixSort-v0.11-Windows" / "PixSortData",
                              parent / "Koma-v0.10-Windows" / "KomaData"):

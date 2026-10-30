@@ -29,3 +29,4 @@ jobs:
           python -m unittest discover -s tests -p test_core.py -v
           python -m unittest discover -s tests -p test_photo_tools.py -v
           python -m unittest discover -s tests -p test_similar.py -v
+          python -m unittest discover -s tests -p test_ui.py -k similar -v
