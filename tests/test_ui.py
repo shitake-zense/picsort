@@ -367,6 +367,76 @@ class WorkflowTests(unittest.TestCase):
                 self.assertTrue(widget.isVisible())
                 self.assertLess(widget.mapTo(self.window, widget.rect().bottomRight()).x(), self.window.width())
 
+    def test_shift_right_click_moves_to_next_similar_group_without_marking(self):
+        dialog = self._similar_dialog_with_copies()
+        self.assertGreaterEqual(len(dialog.groups), 2)
+        before=set(self.window.pending());self.assertEqual(dialog.group_list.currentRow(),0)
+        QTest.mouseClick(dialog.preview, Qt.MouseButton.RightButton, Qt.KeyboardModifier.ShiftModifier,
+                         dialog.preview.rect().center())
+        self.assertEqual(dialog.group_list.currentRow(),1)
+        self.assertIn(dialog.preview.path,dialog.groups[1]);self.assertEqual(set(self.window.pending()),before)
+        QTest.mouseClick(dialog.items.viewport(), Qt.MouseButton.RightButton, Qt.KeyboardModifier.ShiftModifier,
+                         dialog.items.viewport().rect().center())
+        self.assertEqual(dialog.group_list.currentRow(),min(2,len(dialog.groups)-1))
+        self.assertEqual(set(self.window.pending()),before)
+        dialog.reject()
+
+    def test_next_group_preview_is_prefetched(self):
+        dialog=self._similar_dialog_with_copies()
+        self.assertGreaterEqual(len(dialog.groups),2)
+        next_path=dialog.groups[1][0]
+        self.wait_for(lambda: (next_path,"preview") in dialog.image_cache)
+        QTest.mouseClick(dialog.preview,Qt.MouseButton.RightButton,Qt.KeyboardModifier.ShiftModifier,
+                         dialog.preview.rect().center())
+        self.assertEqual(dialog.preview.path,next_path)
+        self.assertFalse(dialog.preview.image.isNull());self.assertFalse(dialog.preview.loading)
+        dialog.reject()
+
+    def test_widths_survive_photo_fullscreen(self):
+        dialog=self._similar_dialog_with_copies();dialog.resize(1000,650);self.application.processEvents()
+        dialog.review_splitter.moveSplitter(240,1);dialog.review_splitter.moveSplitter(600,2);self.application.processEvents()
+        before=dialog.review_splitter.sizes();dialog.toggle_photo_fullscreen();self.application.processEvents()
+        dialog.exit_photo_fullscreen();self.application.processEvents();after=dialog.review_splitter.sizes()
+        for a,b in zip(before,after):self.assertAlmostEqual(a,b,delta=15)
+        dialog.reject()
+
+    def test_shift_right_group_navigation_works_in_photo_fullscreen(self):
+        dialog=self._similar_dialog_with_copies()
+        self.assertGreaterEqual(len(dialog.groups),2)
+        dialog.toggle_photo_fullscreen();self.assertTrue(dialog.photo_only)
+        QTest.mouseClick(dialog.preview,Qt.MouseButton.RightButton,Qt.KeyboardModifier.ShiftModifier,
+                         dialog.preview.rect().center())
+        self.assertEqual(dialog.group_list.currentRow(),1);self.assertTrue(dialog.photo_only)
+        self.assertIn(dialog.preview.path,dialog.groups[1])
+        dialog.exit_photo_fullscreen();dialog.reject()
+
+    def test_splitters_save_widths_and_restore_independent_panels(self):
+        dialog=self._similar_dialog_with_copies();dialog.resize(1000,650);self.application.processEvents()
+        dialog.review_splitter.moveSplitter(240,1);self.application.processEvents()
+        expected=dialog.review_splitter.sizes()
+        self.assertEqual(json.loads((self.root/"data/settings.json").read_text(encoding="utf-8"))["similar_review_widths"],expected)
+        dialog.reject()
+        from similar_ui import SimilarDialog
+        second=SimilarDialog(self.window,list(self.window.visible));second.resize(1000,650);second.show();self.application.processEvents()
+        self.assertAlmostEqual(second.review_splitter.sizes()[0],expected[0],delta=12)
+        second.reject()
+        self.window.resize(1300,700);self.application.processEvents()
+        self.window.workspace_splitter.moveSplitter(310,1);self.application.processEvents()
+        sizes=self.window.workspace_splitter.sizes()
+        self.assertEqual(json.loads((self.root/"data/settings.json").read_text(encoding="utf-8"))["workspace_widths"],sizes)
+        self.window.remember_root()
+        self.assertEqual(json.loads((self.root/"data/settings.json").read_text(encoding="utf-8"))["workspace_widths"],sizes)
+
+    def test_comparison_and_confirmation_panes_are_adjustable(self):
+        self.window.show_compare();self.application.processEvents()
+        self.window.photo_splitter.moveSplitter(300,1);self.application.processEvents()
+        self.assertIn("comparison_widths",json.loads((self.root/"data/settings.json").read_text(encoding="utf-8")))
+        self.window.make_decisions([self.paths[0]],"trash")
+        dialog=ApplyPreviewDialog(self.window,self.window.pending());dialog.resize(850,550);dialog.show();self.application.processEvents()
+        dialog.preview_splitter.moveSplitter(300,1);self.application.processEvents()
+        self.assertIn("apply_preview_widths",json.loads((self.root/"data/settings.json").read_text(encoding="utf-8")))
+        dialog.close()
+
     def test_similar_two_photo_comparison_restores_filtered_photos(self):
         self.window.make_decisions([self.paths[0]], "trash")
         self.window.filter_combo.setCurrentIndex(1)

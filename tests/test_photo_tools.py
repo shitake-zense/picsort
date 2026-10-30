@@ -8,9 +8,10 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PIL import Image
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
+from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 from core import fingerprint
 from photo_tools import CropDialog, HelpDialog, PropertyDialog, photo_properties, save_crop
 
@@ -74,6 +75,58 @@ class PhotoToolsTests(unittest.TestCase):
         QTest.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=end.toPoint())
         box=canvas.selected_pixels(); self.assertLessEqual(abs((box[2]-box[0])-(box[3]-box[1])), 2)
         dialog.close()
+
+    def test_crop_right_drag_moves_selection_without_changing_size_and_clamps(self):
+        dialog = CropDialog(str(self.photo)); dialog.show(); self.app.processEvents()
+        canvas = dialog.canvas; canvas.selection = QRectF(10, 20, 30, 40)
+        rect=canvas.image_rect()
+        def point(x,y):
+            return QPointF(rect.left()+x*rect.width()/canvas.image.width(),
+                           rect.top()+y*rect.height()/canvas.image.height()).toPoint()
+        before=QRectF(canvas.selection)
+        QTest.mousePress(canvas, Qt.MouseButton.RightButton, pos=point(20,30))
+        QTest.mouseMove(canvas, point(35,50))
+        QTest.mouseRelease(canvas, Qt.MouseButton.RightButton, pos=point(35,50))
+        self.assertAlmostEqual(canvas.selection.width(), before.width(), places=4)
+        self.assertAlmostEqual(canvas.selection.height(), before.height(), places=4)
+        self.assertGreater(canvas.selection.left(), before.left())
+        self.assertGreater(canvas.selection.top(), before.top())
+        QTest.mousePress(canvas, Qt.MouseButton.RightButton, pos=point(35,50))
+        QTest.mouseMove(canvas, point(79,119))
+        QTest.mouseRelease(canvas, Qt.MouseButton.RightButton, pos=point(79,119))
+        self.assertLessEqual(canvas.selection.right(), canvas.image.width())
+        self.assertLessEqual(canvas.selection.bottom(), canvas.image.height())
+        dialog.close()
+
+    def test_crop_wheel_zoom_and_pan_preserve_selection(self):
+        dialog=CropDialog(str(self.photo)); dialog.show(); self.app.processEvents()
+        canvas=dialog.canvas;canvas.selection=QRectF(10,20,30,40)
+        initial=QRectF(canvas.selection); pos=canvas.rect().center()
+        wheel=QWheelEvent(QPointF(pos), QPointF(canvas.mapToGlobal(pos)), QPoint(0,0), QPoint(0,120),
+                          Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+        QApplication.sendEvent(canvas,wheel)
+        self.assertGreater(canvas.zoom_scale, 1); self.assertEqual(canvas.selection, initial)
+        canvas.zoom(4)
+        old=QPointF(canvas.offset)
+        QTest.mousePress(canvas,Qt.MouseButton.MiddleButton,pos=pos)
+        QTest.mouseMove(canvas,pos+QPoint(40,30))
+        QTest.mouseRelease(canvas,Qt.MouseButton.MiddleButton,pos=pos+QPoint(40,30))
+        self.assertNotEqual(canvas.offset,old); self.assertEqual(canvas.selection,initial)
+        canvas.fit_image(); self.assertEqual(canvas.zoom_scale,1.0); self.assertEqual(canvas.offset,QPointF())
+        dialog.close()
+
+    def test_crop_grid_toggle_changes_overlay_and_is_remembered(self):
+        parent=QWidget();parent.data_dir=self.root
+        dialog=CropDialog(str(self.photo),parent); dialog.show();self.app.processEvents()
+        dialog.canvas.selection=QRectF(5,5,60,80);dialog.canvas.update();self.app.processEvents()
+        image_on=dialog.canvas.grab().toImage()
+        dialog.grid_button.click();self.app.processEvents()
+        image_off=dialog.canvas.grab().toImage()
+        self.assertFalse(dialog.canvas.grid_enabled);self.assertNotEqual(image_on,image_off)
+        dialog.close()
+        second=CropDialog(str(self.photo),parent)
+        self.assertFalse(second.grid_button.isChecked());self.assertFalse(second.canvas.grid_enabled)
+        second.close();parent.close()
 
     def test_guide_is_categorized(self):
         dialog=HelpDialog(); dialog.show(); self.app.processEvents()

@@ -8,12 +8,13 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QImageReader, QPainter, QPen
+from PySide6.QtGui import QColor, QImageReader, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox,
     QFormLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QTabWidget, QVBoxLayout, QWidget)
 
 from core import choose_target, fingerprint, matches
+from layout_settings import read_settings, write_setting
 
 
 def photo_properties(path):
@@ -95,15 +96,19 @@ class CropCanvas(QWidget):
     def __init__(self, image, parent=None):
         super().__init__(parent)
         self.image = image; self.start = None; self.selection = QRectF(); self.ratio = 0
+        self.zoom_scale = 1.0; self.offset = QPointF(); self.grid_enabled = True
+        self.move_start = None; self.move_selection = QRectF()
+        self.pan_start = None; self.pan_offset = QPointF()
         self.setMinimumSize(160, 130)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.CrossCursor)
 
     def image_rect(self):
         area = QRectF(self.rect()).adjusted(6, 6, -6, -6)
-        scale = min(area.width() / self.image.width(), area.height() / self.image.height())
+        scale = min(area.width() / self.image.width(), area.height() / self.image.height()) * self.zoom_scale
         w, h = self.image.width() * scale, self.image.height() * scale
-        return QRectF(area.center().x() - w / 2, area.center().y() - h / 2, w, h)
+        return QRectF(area.center().x() - w / 2 + self.offset.x(),
+                      area.center().y() - h / 2 + self.offset.y(), w, h)
 
     def image_point(self, point):
         rect = self.image_rect()
@@ -113,11 +118,28 @@ class CropCanvas(QWidget):
                        (y - rect.top()) * self.image.height() / rect.height())
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self.image_rect().contains(event.position()):
+        if not self.image_rect().contains(event.position()): return
+        if event.button() == Qt.MouseButton.LeftButton:
             self.start = self.image_point(event.position()); self.selection = QRectF(); self.update()
             self.selection_changed.emit()
+        elif event.button() == Qt.MouseButton.RightButton and not self.selection.isEmpty():
+            self.move_start = self.image_point(event.position()); self.move_selection = QRectF(self.selection)
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif event.button() == Qt.MouseButton.MiddleButton and self.zoom_scale > 1:
+            self.pan_start = QPointF(event.position()); self.pan_offset = QPointF(self.offset)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseMoveEvent(self, event):
+        if self.pan_start is not None:
+            self.offset = self.pan_offset + event.position() - self.pan_start
+            self.clamp_offset(); self.update(); return
+        if self.move_start is not None:
+            delta = self.image_point(event.position()) - self.move_start
+            rect = QRectF(self.move_selection)
+            x = max(0.0, min(self.image.width() - rect.width(), rect.left() + delta.x()))
+            y = max(0.0, min(self.image.height() - rect.height(), rect.top() + delta.y()))
+            rect.moveTopLeft(QPointF(x, y)); self.selection = rect
+            self.update(); self.selection_changed.emit(); return
         if self.start is None: return
         end = self.image_point(event.position())
         dx, dy = end.x() - self.start.x(), end.y() - self.start.y()
@@ -131,6 +153,47 @@ class CropCanvas(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self.start is not None:
             self.mouseMoveEvent(event); self.start = None
+        elif event.button() == Qt.MouseButton.RightButton and self.move_start is not None:
+            self.mouseMoveEvent(event); self.move_start = None; self.setCursor(Qt.CursorShape.CrossCursor)
+        elif event.button() == Qt.MouseButton.MiddleButton and self.pan_start is not None:
+            self.mouseMoveEvent(event); self.pan_start = None; self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def clamp_offset(self):
+        area = QRectF(self.rect()).adjusted(6, 6, -6, -6)
+        image = self.image_rect()
+        max_x = max(0.0, (image.width() - area.width()) / 2)
+        max_y = max(0.0, (image.height() - area.height()) / 2)
+        self.offset = QPointF(max(-max_x, min(max_x, self.offset.x())),
+                              max(-max_y, min(max_y, self.offset.y())))
+
+    def zoom(self, factor, position=None):
+        old = self.image_rect()
+        position = position if position is not None else QRectF(self.rect()).center()
+        if old.isEmpty(): return
+        x = (position.x() - old.left()) / old.width()
+        y = (position.y() - old.top()) / old.height()
+        self.zoom_scale = max(1.0, min(12.0, self.zoom_scale * factor))
+        if self.zoom_scale <= 1.0001:
+            self.zoom_scale = 1.0; self.offset = QPointF()
+        else:
+            current = self.image_rect()
+            self.offset += QPointF(position.x() - (current.left() + x * current.width()),
+                                   position.y() - (current.top() + y * current.height()))
+            self.clamp_offset()
+        self.update()
+
+    def fit_image(self):
+        self.zoom_scale = 1.0; self.offset = QPointF(); self.update()
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y() or event.pixelDelta().y()
+        if delta:
+            self.zoom(1.25 ** (delta / 120.0 if event.angleDelta().y() else delta / 100.0), event.position())
+            event.accept()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.clamp_offset()
 
     def selected_pixels(self):
         if self.selection.isEmpty(): return None
@@ -151,6 +214,13 @@ class CropCanvas(QWidget):
             painter.fillRect(QRectF(rect.left(), selected.bottom(), rect.width(), max(0, rect.bottom()-selected.bottom())), QColor(0,0,0,150))
             painter.fillRect(QRectF(rect.left(), selected.top(), max(0, selected.left()-rect.left()), selected.height()), QColor(0,0,0,150))
             painter.fillRect(QRectF(selected.right(), selected.top(), max(0, rect.right()-selected.right()), selected.height()), QColor(0,0,0,150))
+            if self.grid_enabled:
+                pen = QPen(QColor(255, 255, 255, 115), 1); pen.setCosmetic(True); painter.setPen(pen)
+                for fraction in (1/3, 2/3):
+                    x = selected.left() + selected.width() * fraction
+                    y = selected.top() + selected.height() * fraction
+                    painter.drawLine(QPointF(x, selected.top()), QPointF(x, selected.bottom()))
+                    painter.drawLine(QPointF(selected.left(), y), QPointF(selected.right(), y))
             painter.setPen(QPen(QColor("#d7ffe1"), 2)); painter.setBrush(Qt.BrushStyle.NoBrush); painter.drawRect(selected)
         painter.end()
 
@@ -205,7 +275,7 @@ class CropDialog(QDialog):
         layout = QVBoxLayout(self)
         header = QLabel("残したい範囲をドラッグして選択")
         header.setStyleSheet("font-size: 18px; font-weight: 700;"); layout.addWidget(header)
-        instruction = QLabel("元の写真はそのまま残し、同じフォルダに別ファイルを保存します。選び直すときはもう一度ドラッグ。")
+        instruction = QLabel("左ドラッグ：範囲を選択 / 右ドラッグ：範囲を移動 / ホイール：拡大 / 押し込みドラッグ：表示位置を移動")
         instruction.setWordWrap(True); layout.addWidget(instruction)
         self.expected = None
         try:
@@ -223,8 +293,26 @@ class CropDialog(QDialog):
         for title, ratio in (("自由",0), ("1 : 1",1), ("4 : 3",4/3), ("3 : 2",3/2), ("16 : 9",16/9)):
             self.ratio.addItem(title, ratio)
         row.addWidget(self.ratio); self.size_label = QLabel("範囲を選択してください")
-        row.addWidget(self.size_label); row.addStretch(); layout.addLayout(row)
+        row.addWidget(self.size_label); row.addStretch()
+        self.zoom_out = QPushButton("−"); self.zoom_in = QPushButton("＋"); self.fit_button = QPushButton("全体")
+        for button in (self.zoom_out, self.zoom_in, self.fit_button):
+            button.setStyleSheet("padding: 5px 9px;"); row.addWidget(button)
+        self.grid_button = QPushButton("グリッド ON"); self.grid_button.setCheckable(True)
+        self.grid_button.setToolTip("選択範囲に三分割のガイド線を表示")
+        row.addWidget(self.grid_button); layout.addLayout(row)
         self.canvas = CropCanvas(image); layout.addWidget(self.canvas, 1)
+        self.data_dir = getattr(parent, "data_dir", None)
+        grid_enabled = read_settings(self.data_dir).get("crop_grid", True) if self.data_dir else True
+        self.grid_button.setChecked(grid_enabled if isinstance(grid_enabled, bool) else True)
+        self.set_grid(self.grid_button.isChecked(), save=False)
+        self.grid_button.toggled.connect(self.set_grid)
+        self.zoom_out.clicked.connect(lambda: self.canvas.zoom(.8))
+        self.zoom_in.clicked.connect(lambda: self.canvas.zoom(1.25))
+        self.fit_button.clicked.connect(self.canvas.fit_image)
+        self.zoom_shortcuts = []
+        for sequence, factor in (("Ctrl+Up", 1.25), ("Ctrl+Down", .8), ("Ctrl++", 1.25), ("Ctrl+-", .8)):
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.activated.connect(lambda n=factor: self.canvas.zoom(n)); self.zoom_shortcuts.append(shortcut)
         self.canvas.selection_changed.connect(self.update_selection)
         self.ratio.currentIndexChanged.connect(self.change_ratio)
         note = QLabel("JPEGは再圧縮されます。一部の付加情報は引き継がれない場合があります。")
@@ -234,6 +322,12 @@ class CropDialog(QDialog):
         self.save_button = actions.addButton("別ファイルで保存", QDialogButtonBox.ButtonRole.AcceptRole)
         self.save_button.setEnabled(False); actions.rejected.connect(self.reject); actions.accepted.connect(self.save)
         layout.addWidget(actions)
+
+    def set_grid(self, enabled, save=True):
+        self.canvas.grid_enabled = enabled
+        self.grid_button.setText("グリッド ON" if enabled else "グリッド OFF")
+        self.canvas.update()
+        if save and self.data_dir: write_setting(self.data_dir, "crop_grid", bool(enabled))
 
     def change_ratio(self):
         self.canvas.ratio = self.ratio.currentData(); self.canvas.selection = QRectF()
@@ -269,8 +363,9 @@ HELP = [
  ("Ctrl＋↑ / ↓", "キーボードで拡大・縮小します。Ctrl＋＋ / －も使えます。"),
  ("Ctrl+Shift＋矢印", "拡大中の表示位置を移動します。"),
  ("プロパティ / Alt+Enter", "画像サイズ、撮影日時、カメラ設定など、記録されている情報を表示します。"),
- ("切り抜き / Ctrl+Shift+X", "ドラッグで範囲を選び、元画像を残したまま別ファイルで保存します。"),
- ("似た写真を探す", "撮影時刻と構図、または構図だけで候補を探します。検索画面内で拡大・全画面・2枚比較や振り分けができます。削除の判断は自分で行います。")]),
+ ("切り抜き / Ctrl+Shift+X", "左ドラッグで選択、右ドラッグで範囲を移動。ホイールで拡大し、押し込みドラッグで表示位置を移動します。グリッドは切り替えられます。元画像を残して別ファイルに保存します。"),
+ ("似た写真を探す", "撮影時刻と構図、または構図だけで候補を探します。Shift＋右クリックで次のグループに進みます。削除の判断は自分で行います。"),
+ ("画面幅の調整", "画面の縦の境界線をドラッグすると、一覧やプレビューなどの幅を変えられます。")]),
  ("整理する", [("行き先のキー", "写真を指定したフォルダへ振り分ける候補にして次へ進みます。"),
  ("Shift＋左クリック / X", "削除候補にして次へ進みます。"), ("Ctrl＋左クリック / 0", "その写真の削除・振り分け候補を解除します。"),
  ("H", "保留にして次へ進みます。"), ("Ctrl+Z / 取り消す", "直前の候補指定を戻します。"),

@@ -21,14 +21,15 @@ from PySide6.QtGui import (QColor, QColorSpace, QDrag, QFont, QIcon, QImage, QIm
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog,
     QDialogButtonBox, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QListView, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
+    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget,
     QStyledItemDelegate, QTabWidget, QVBoxLayout, QWidget)
 
 from core import SUPPORTED, Store, apply_decision, fingerprint, is_within
 from photo_tools import PropertyDialog, CropDialog, HelpDialog
 from similar_ui import SimilarDialog
+from layout_settings import configure_splitter, restore_splitter
 
-VERSION = "0.15.0"
+VERSION = "0.16.0"
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets"
 
 
@@ -136,6 +137,8 @@ QScrollBar:vertical { background: #171b21; width: 9px; }
 QScrollBar::handle { background: #414b59; border-radius: 4px; min-width: 25px; min-height: 25px; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollArea { border: 0; background: transparent; }
+QSplitter::handle { background: #303943; }
+QSplitter::handle:hover { background: #a9dfb7; }
 QLineEdit { background: #232932; color: #f2f5f8; border: 1px solid #697989; border-radius: 5px;
             padding: 6px 8px; selection-background-color: #91c76f; selection-color: #142018; }
 QLineEdit:focus { border-color: #a9dfb7; }
@@ -599,13 +602,13 @@ class ApplyPreviewDialog(QDialog):
                         "選んだ写真を右側に表示します。解除は［戻る］でも保存されます。", "muted")
         message.setWordWrap(True)
         layout.addWidget(message)
-        content = QHBoxLayout()
+        self.preview_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.tabs = QTabWidget()
-        self.tabs.setMinimumWidth(200)
-        self.tabs.setMaximumWidth(530)
+        self.tabs.setMinimumWidth(180)
         self.tabs.setUsesScrollButtons(True)
-        content.addWidget(self.tabs, 2)
-        right = QVBoxLayout()
+        self.preview_splitter.addWidget(self.tabs)
+        preview_panel = QWidget(); right = QVBoxLayout(preview_panel)
+        right.setContentsMargins(0, 0, 0, 0)
         self.detail = label("写真を選択してください", "muted")
         self.detail.setWordWrap(True)
         self.detail.setMaximumHeight(85)
@@ -616,8 +619,10 @@ class ApplyPreviewDialog(QDialog):
         self.preview.setMinimumSize(150, 120)
         self.preview.setStyleSheet("background: #101318; color: #ccd4df; border: 1px solid #39424f;")
         right.addWidget(self.preview, 1)
-        content.addLayout(right, 3)
-        layout.addLayout(content, 1)
+        self.preview_splitter.addWidget(preview_panel)
+        self.preview_splitter.setStretchFactor(0, 2); self.preview_splitter.setStretchFactor(1, 3)
+        configure_splitter(self.preview_splitter, window.data_dir, "apply_preview_widths", [380, 540])
+        layout.addWidget(self.preview_splitter, 1)
 
         groups = [("削除", "OSのごみ箱", [(p, d) for p, d in pending.items() if d.get("action") == "trash"])]
         # Keep a tab for every configured destination, plus destinations retained
@@ -897,12 +902,13 @@ class Window(QMainWindow):
         header_layout.addWidget(self.refresh_button)
         header_layout.addWidget(self.open_button)
         outer.addWidget(header)
-        body = QHBoxLayout()
-        body.setSpacing(0)
+        body = QSplitter(Qt.Orientation.Horizontal)
+        self.workspace_splitter = body
         sidebar = QFrame()
         self.sidebar_frame = sidebar
         sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(240)
+        sidebar.setMinimumWidth(185)
+        sidebar.setMaximumWidth(800)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         side_scroll = QScrollArea()
@@ -982,7 +988,8 @@ class Window(QMainWindow):
             if isinstance(child, (QLabel, QPushButton, QListWidget, TrashDrop)):
                 child.setSizePolicy(QSizePolicy.Policy.Ignored, child.sizePolicy().verticalPolicy())
         body.addWidget(sidebar)
-        content = QVBoxLayout()
+        self.content_area = QWidget()
+        content = QVBoxLayout(self.content_area)
         self.content_layout = content
         content.setContentsMargins(10, 8, 10, 6)
         content.setSpacing(6)
@@ -1060,7 +1067,9 @@ class Window(QMainWindow):
         self.photo_page = QWidget()
         photo_layout = QHBoxLayout(self.photo_page)
         photo_layout.setContentsMargins(0, 0, 0, 0)
-        photo_layout.setSpacing(5)
+        photo_layout.setSpacing(0)
+        self.photo_splitter = QSplitter(Qt.Orientation.Horizontal)
+        photo_layout.addWidget(self.photo_splitter)
         self.canvas = PhotoCanvas()
         self.compare_canvas = PhotoCanvas()
         self.pane_wrappers = []
@@ -1082,9 +1091,11 @@ class Window(QMainWindow):
             canvas.activated.connect(self.activate_canvas)
             canvas.zoom_requested.connect(self.canvas_zoom_changed)
             canvas.fullscreen_requested.connect(self.toggle_photo_fullscreen)
-            photo_layout.addWidget(pane, 1)
+            self.photo_splitter.addWidget(pane)
             self.pane_wrappers.append(pane)
             self.pane_labels.append(pane_label)
+        self.photo_splitter.setStretchFactor(0, 1); self.photo_splitter.setStretchFactor(1, 1)
+        configure_splitter(self.photo_splitter, self.data_dir, "comparison_widths", [500, 500])
         self.pane_wrappers[1].hide()
         self.first_overlay = button("↺ 最初の写真へ", self.go_first, "primary")
         self.first_overlay.setParent(self.photo_page)
@@ -1165,8 +1176,11 @@ class Window(QMainWindow):
         film_row.addWidget(self.film)
         film_row.addStretch()
         content.addLayout(film_row)
-        body.addLayout(content, 1)
-        outer.addLayout(body, 1)
+        body.addWidget(self.content_area)
+        body.setStretchFactor(0, 0); body.setStretchFactor(1, 1)
+        configure_splitter(body, self.data_dir, "workspace_widths", [240, 900])
+        body.splitterMoved.connect(lambda *_: self.update_toolbar())
+        outer.addWidget(body, 1)
         footer = QFrame()
         self.footer_frame = footer
         footer.setObjectName("footer")
@@ -1669,6 +1683,8 @@ class Window(QMainWindow):
         self.compare_button.setChecked(not grid and self.compare_mode)
         self.pin_button.setVisible(not grid and self.compare_mode and not self.photo_fullscreen and self.width() >= 1200)
         self.pane_wrappers[1].setVisible(self.compare_mode)
+        if self.compare_mode:
+            QTimer.singleShot(0, lambda: restore_splitter(self.photo_splitter, self.data_dir, "comparison_widths", [500, 500]) if isValid(self.photo_splitter) else None)
         for pane_label in self.pane_labels:
             pane_label.setVisible(self.compare_mode and not self.photo_fullscreen)
         self.film.setVisible(not grid and not self.photo_fullscreen)
@@ -1680,7 +1696,7 @@ class Window(QMainWindow):
         QTimer.singleShot(50, self.request_thumbnails)
 
     def update_toolbar(self):
-        compact = self.width() < 1200
+        compact = self.content_area.width() < 925
         active = not self.photo_fullscreen
         for widget in (self.property_button, self.crop_button, self.similar_button):
             widget.setVisible(active and not compact)
@@ -2353,6 +2369,7 @@ class Window(QMainWindow):
             self.brand_tagline.setVisible(self.width() >= 980 and not self.photo_fullscreen)
         if hasattr(self, "tools_button") and hasattr(self, "stack"):
             self.update_toolbar()
+            QTimer.singleShot(0, self.update_toolbar)
         if hasattr(self, "first_overlay") and self.photo_fullscreen:
             QTimer.singleShot(0, self.position_first_overlay)
         QTimer.singleShot(80, self.request_thumbnails)
@@ -2898,7 +2915,8 @@ def main():
         migrated = False
         if (getattr(sys, "frozen", False) and "PIXSORT_DATA_DIR" not in os.environ and "KOMA_DATA_DIR" not in os.environ):
             parent = application_directory().parent
-            for previous in (parent / "PixSort-v0.14-Windows" / "PixSortData",
+            for previous in (parent / "PixSort-v0.15-Windows" / "PixSortData",
+                             parent / "PixSort-v0.14-Windows" / "PixSortData",
                              parent / "PixSort-v0.13-Windows" / "PixSortData",
                              parent / "PixSort-v0.12-Windows" / "PixSortData",
                              parent / "PixSort-v0.11-Windows" / "PixSortData",

@@ -30,3 +30,6 @@ jobs:
           python -m unittest discover -s tests -p test_photo_tools.py -v
           python -m unittest discover -s tests -p test_similar.py -v
           python -m unittest discover -s tests -p test_ui.py -k similar -v
+          python -m unittest discover -s tests -p test_ui.py -k group_navigation -v
+          python -m unittest discover -s tests -p test_ui.py -k splitter -v
+          python -m unittest discover -s tests -p test_ui.py -k panes_are_adjustable -v

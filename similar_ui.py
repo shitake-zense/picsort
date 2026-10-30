@@ -10,10 +10,11 @@ from PySide6.QtGui import QColor, QColorSpace, QIcon, QImageReader, QKeySequence
 from shiboken6 import isValid
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog,
     QDialogButtonBox, QHBoxLayout, QLabel, QListView, QListWidget, QListWidgetItem,
-    QMenu, QMessageBox, QProgressBar, QPushButton, QSizePolicy, QStyledItemDelegate, QVBoxLayout, QWidget)
+    QMenu, QMessageBox, QProgressBar, QPushButton, QSizePolicy, QSplitter, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from similar import find_similar
 from photo_tools import PropertyDialog
+from layout_settings import configure_splitter, restore_splitter
 
 
 class SimilarCards(QListWidget):
@@ -107,6 +108,7 @@ class SimilarDialog(QDialog):
         self.image_cache = OrderedDict()
         self.image_loading = set()
         self.shortcuts = []
+        self._group_jump_source = None
         self.setWindowTitle("似た写真を探す")
         screen = self.screen() or QApplication.primaryScreen()
         if screen:
@@ -121,6 +123,10 @@ class SimilarDialog(QDialog):
         self.title_label = title; heading.addWidget(title); heading.addStretch()
         self.fullscreen_button = QPushButton("全画面  F11")
         self.fullscreen_button.clicked.connect(self.toggle_dialog_fullscreen)
+        self.next_group_button = QPushButton("次のグループ →")
+        self.next_group_button.setToolTip("Shift＋右クリックでも次のグループへ移動")
+        self.next_group_button.clicked.connect(self.next_group)
+        heading.addWidget(self.next_group_button)
         heading.addWidget(self.fullscreen_button); layout.addLayout(heading)
         note = QLabel("表示中の写真を小さくして構図を比較します。候補を確認し、残す・削除する写真は自分で選びます。")
         note.setWordWrap(True); self.note = note; layout.addWidget(note)
@@ -151,13 +157,18 @@ class SimilarDialog(QDialog):
         self.progress = QProgressBar(); self.progress.setRange(0, len(self.paths)); self.progress.hide()
         self.progress.setStyleSheet("QProgressBar {background: #232932; border: 1px solid #596675; border-radius: 5px; text-align: center;} QProgressBar::chunk {background: #668e70; border-radius: 4px;}")
         layout.addWidget(self.progress)
-        main = QHBoxLayout()
-        self.left_panel = QWidget(); left = QVBoxLayout(self.left_panel)
+        main = QSplitter(Qt.Orientation.Horizontal)
+        self.review_splitter = main
+        self.left_panel = QWidget(); self.left_panel.setMinimumWidth(105)
+        left = QVBoxLayout(self.left_panel)
         left.setContentsMargins(0, 0, 0, 0); left.addWidget(QLabel("候補グループ"))
-        self.group_list = QListWidget(); self.group_list.setMinimumWidth(100); self.group_list.setMaximumWidth(190)
-        self.group_list.currentRowChanged.connect(self.group_selected); left.addWidget(self.group_list, 1); main.addWidget(self.left_panel, 1)
-        self.center_panel = QWidget(); center = QVBoxLayout(self.center_panel)
+        self.group_list = QListWidget(); self.group_list.setMinimumWidth(100)
+        self.group_list.currentRowChanged.connect(self.group_selected); left.addWidget(self.group_list, 1); main.addWidget(self.left_panel)
+        self.center_panel = QWidget(); self.center_panel.setMinimumWidth(140)
+        center = QVBoxLayout(self.center_panel)
         center.setContentsMargins(0, 0, 0, 0); self.count_label = QLabel("写真をクリックしてチェック")
+        self.count_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.count_label.setToolTip("クリックでチェック / Shift＋クリックで範囲選択")
         center.addWidget(self.count_label)
         self.items = SimilarCards(); self.items.setViewMode(QListView.ViewMode.IconMode)
         self.items.setResizeMode(QListView.ResizeMode.Adjust); self.items.setMovement(QListView.Movement.Static)
@@ -166,8 +177,9 @@ class SimilarDialog(QDialog):
         self.items.setItemDelegate(SimilarCardDelegate(self.items))
         self.items.itemChanged.connect(self.item_checked)
         self.items.currentItemChanged.connect(self.preview_selected)
-        center.addWidget(self.items, 1); main.addWidget(self.center_panel, 3)
-        self.right_panel = QWidget(); right = QVBoxLayout(self.right_panel)
+        center.addWidget(self.items, 1); main.addWidget(self.center_panel)
+        self.right_panel = QWidget(); self.right_panel.setMinimumWidth(150)
+        right = QVBoxLayout(self.right_panel)
         right.setContentsMargins(0, 0, 0, 0); self.preview_info = QLabel("写真を選択してください")
         self.preview_info.setWordWrap(True); self.preview_info.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.preview_info.setMaximumHeight(60); right.addWidget(self.preview_info)
@@ -175,9 +187,11 @@ class SimilarDialog(QDialog):
         self.compare_canvas = type(window.canvas)()
         self.preview.setMinimumSize(80, 80); self.compare_canvas.setMinimumSize(80, 80)
         self.preview.setFocusPolicy(Qt.FocusPolicy.StrongFocus); self.compare_canvas.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.canvas_row = QHBoxLayout(); self.canvas_row.setContentsMargins(0, 0, 0, 0); self.canvas_row.setSpacing(4)
-        self.canvas_row.addWidget(self.preview, 1); self.canvas_row.addWidget(self.compare_canvas, 1)
-        self.compare_canvas.hide(); right.addLayout(self.canvas_row, 1)
+        self.canvas_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.canvas_splitter.addWidget(self.preview); self.canvas_splitter.addWidget(self.compare_canvas)
+        self.canvas_splitter.setStretchFactor(0, 1); self.canvas_splitter.setStretchFactor(1, 1)
+        configure_splitter(self.canvas_splitter, window.data_dir, "similar_compare_widths", [400, 400])
+        self.compare_canvas.hide(); right.addWidget(self.canvas_splitter, 1)
         self.active_canvas = self.preview
         for canvas in (self.preview, self.compare_canvas):
             canvas.activated.connect(self.activate_preview)
@@ -188,7 +202,9 @@ class SimilarDialog(QDialog):
             canvas.fullscreen_requested.connect(self.toggle_photo_fullscreen)
         self.exit_photo_button = QPushButton("全画面を終了  Esc", self.preview)
         self.exit_photo_button.clicked.connect(self.exit_photo_fullscreen); self.exit_photo_button.hide()
-        self.preview.installEventFilter(self)
+        for target in (self.preview, self.compare_canvas, self.items.viewport(), self.group_list.viewport(),
+                       self.left_panel, self.center_panel, self.right_panel):
+            target.installEventFilter(self)
         self.zoom_controls = QWidget(); zoom_row = QHBoxLayout(self.zoom_controls)
         zoom_row.setContentsMargins(0, 0, 0, 0)
         self.prev_button = QPushButton("←"); self.prev_button.setToolTip("前の写真へ")
@@ -211,8 +227,10 @@ class SimilarDialog(QDialog):
         hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         hint.setToolTip("写真にマウスを置くと、X・H・0・振り分け先キーも使えます。Ctrl＋Fで写真全画面。")
         self.preview_hint = hint; right.addWidget(hint)
-        main.addWidget(self.right_panel, 2)
-        layout.addLayout(main, 1)
+        main.addWidget(self.right_panel)
+        main.setStretchFactor(0, 1); main.setStretchFactor(1, 3); main.setStretchFactor(2, 2)
+        configure_splitter(main, window.data_dir, "similar_review_widths", [180, 500, 450])
+        layout.addWidget(main, 1)
         self.actions_widget = QWidget(); actions = QHBoxLayout(self.actions_widget)
         actions.setContentsMargins(0, 0, 0, 0)
         self.open_button = QPushButton("選んだ写真を表示"); self.open_button.clicked.connect(self.open_photo)
@@ -307,6 +325,8 @@ class SimilarDialog(QDialog):
             item.setToolTip(self.window.tooltip_for(path)); self.items.addItem(item)
         self.items.setCurrentRow(0); self.items.blockSignals(False)
         self.preview_selected(self.items.currentItem(), None)
+        if row + 1 < len(self.groups) and self.groups[row + 1]:
+            self.request_image(self.preview, "preview", path=self.groups[row + 1][0])
         self.load_thumbnails(generation, 0); self.update_actions()
 
     def load_thumbnails(self, generation, start):
@@ -339,6 +359,7 @@ class SimilarDialog(QDialog):
         self.clear_checks_button.setEnabled(enabled and n > 0)
         self.clear_button.setEnabled(enabled and n > 0)
         self.trash_button.setEnabled(enabled and n > 0)
+        self.next_group_button.setEnabled(enabled and self.group_list.currentRow() + 1 < len(self.groups))
         self.assign_button.setEnabled(enabled and n > 0 and bool(self.window.state.get("destinations", [])))
 
     def preview_selected(self, item, _previous):
@@ -562,7 +583,7 @@ class SimilarDialog(QDialog):
         if not self.active_canvas or not self.active_canvas.path: return
         self.return_fullscreen = self.dialog_fullscreen; self.photo_only = True
         for widget in (self.title_label, self.fullscreen_button, self.note, self.filter_widget, self.status,
-                       self.progress, self.left_panel, self.center_panel, self.preview_info, self.zoom_controls,
+                       self.progress, self.next_group_button, self.left_panel, self.center_panel, self.preview_info, self.zoom_controls,
                        self.preview_hint, self.actions_widget, self.actions2_widget): widget.hide()
         self.layout().setContentsMargins(0, 0, 0, 0); self.showFullScreen()
         self.exit_photo_button.show(); self.position_exit_button(); self.update_preview_info()
@@ -571,7 +592,7 @@ class SimilarDialog(QDialog):
         if not self.photo_only: return
         self.photo_only = False; self.exit_photo_button.hide(); self.layout().setContentsMargins(9, 9, 9, 9)
         for widget in (self.title_label, self.fullscreen_button, self.note, self.filter_widget, self.status,
-                       self.left_panel, self.center_panel, self.preview_info, self.zoom_controls,
+                       self.next_group_button, self.left_panel, self.center_panel, self.preview_info, self.zoom_controls,
                        self.preview_hint, self.actions_widget, self.actions2_widget): widget.show()
         self.progress.setVisible(self.running)
         if self.return_fullscreen: self.showFullScreen()
@@ -586,7 +607,25 @@ class SimilarDialog(QDialog):
     def eventFilter(self, obj, event):
         if obj is self.preview and event.type() == QEvent.Type.Resize and self.photo_only:
             QTimer.singleShot(0, self.position_exit_button)
+        if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.RightButton:
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self._group_jump_source = obj
+                event.accept(); return True
+            self._group_jump_source = None
+        if event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.RightButton:
+            if self._group_jump_source is obj:
+                self._group_jump_source = None
+                self.next_group(); event.accept(); return True
         return super().eventFilter(obj, event)
+
+    def next_group(self):
+        if self.running or not self.groups: return
+        row = self.group_list.currentRow()
+        if 0 <= row + 1 < len(self.groups):
+            self.group_list.setCurrentRow(row + 1)
+            self.status.setText(f"グループ {row + 2} / {len(self.groups)}")
+        else:
+            self.status.setText("最後のグループです。")
 
     def reject(self):
         if self.photo_only: self.exit_photo_fullscreen()
@@ -609,6 +648,7 @@ class SimilarDialog(QDialog):
         self.compare_mode = True; self.active_canvas = self.preview
         self.preview.set_photo(chosen[0]); self.compare_canvas.set_photo(chosen[1])
         self.compare_canvas.show(); self.compare_button.setText("比較を終了")
+        QTimer.singleShot(0, lambda: restore_splitter(self.canvas_splitter, self.window.data_dir, "similar_compare_widths", [400, 400]) if isValid(self.canvas_splitter) else None)
         self.request_image(self.preview, "preview"); self.request_image(self.compare_canvas, "preview")
         self.prefetch_neighbours(self.preview); self.prefetch_neighbours(self.compare_canvas)
         self.update_preview_info(); self.update_actions()
