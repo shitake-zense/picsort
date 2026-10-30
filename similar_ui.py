@@ -14,12 +14,25 @@ from similar import find_similar
 
 
 class SimilarCards(QListWidget):
-    """Click anywhere on a card to check it and show its preview."""
+    """Click to check a card; Shift-click checks an inclusive range."""
+    def __init__(self):
+        super().__init__()
+        self.anchor_path = ""
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             item = self.itemAt(event.position().toPoint())
             if item:
-                item.setCheckState(Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked)
+                path = item.data(Qt.ItemDataRole.UserRole)
+                anchor = next((i for i in range(self.count())
+                               if self.item(i).data(Qt.ItemDataRole.UserRole) == self.anchor_path), -1)
+                row = self.row(item)
+                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier and anchor >= 0:
+                    for index in range(min(anchor, row), max(anchor, row) + 1):
+                        self.item(index).setCheckState(Qt.CheckState.Checked)
+                else:
+                    item.setCheckState(Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked)
+                    self.anchor_path = path
                 self.setCurrentItem(item)
             event.accept()
         else:
@@ -29,6 +42,7 @@ class SimilarCards(QListWidget):
         if event.key() == Qt.Key.Key_Space and self.currentItem():
             item = self.currentItem()
             item.setCheckState(Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked)
+            self.anchor_path = item.data(Qt.ItemDataRole.UserRole)
             event.accept()
         else:
             super().keyPressEvent(event)
@@ -208,7 +222,7 @@ class SimilarDialog(QDialog):
 
     def group_selected(self, row):
         self.thumb_generation += 1; generation = self.thumb_generation
-        self.items.blockSignals(True); self.items.clear()
+        self.items.blockSignals(True); self.items.clear(); self.items.anchor_path = ""
         if row < 0 or row >= len(self.groups):
             self.items.blockSignals(False); self.update_actions(); return
         for path in self.groups[row]:
@@ -245,7 +259,7 @@ class SimilarDialog(QDialog):
 
     def update_actions(self):
         n = len(self.checked)
-        self.count_label.setText(f"{n:,} 枚チェック（他グループを含む）" if n else "写真をクリックしてチェック")
+        self.count_label.setText(f"{n:,} 枚チェック（他グループを含む）" if n else "クリックでチェック / Shift＋クリックで範囲選択")
         enabled = bool(self.groups) and not self.running
         self.open_button.setEnabled(enabled and self.items.currentItem() is not None)
         self.compare_button.setEnabled(enabled and n == 2)
@@ -286,7 +300,7 @@ class SimilarDialog(QDialog):
         if len(chosen) == 2: self.chosen_paths = chosen; self.accept()
 
     def clear_checks(self):
-        self.checked.clear(); self.items.blockSignals(True)
+        self.checked.clear(); self.items.anchor_path = ""; self.items.blockSignals(True)
         for i in range(self.items.count()): self.items.item(i).setCheckState(Qt.CheckState.Unchecked)
         self.items.blockSignals(False); self.update_actions()
 

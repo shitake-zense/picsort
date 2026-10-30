@@ -197,6 +197,21 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn(path, dialog.checked)
         dialog.reject()
 
+    def test_similarity_card_shift_click_checks_range(self):
+        from similar_ui import SimilarDialog
+        for i in range(3): shutil.copy2(self.photos / "DEMO_001.jpg", self.photos / f"DEMO_001_copy{i}.jpg")
+        self.window.refresh_folder(); self.wait_for(lambda: not self.window.scanning)
+        dialog = SimilarDialog(self.window, list(self.window.visible))
+        dialog.show(); dialog.mode.setCurrentIndex(1); dialog.start_search()
+        self.wait_for(lambda: not dialog.running)
+        self.assertGreaterEqual(dialog.items.count(), 4)
+        first = dialog.items.visualItemRect(dialog.items.item(0)).center()
+        last = dialog.items.visualItemRect(dialog.items.item(2)).center()
+        QTest.mouseClick(dialog.items.viewport(), Qt.MouseButton.LeftButton, pos=first)
+        QTest.mouseClick(dialog.items.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier, pos=last)
+        self.assertEqual(len(dialog.checked), 3)
+        dialog.reject()
+
     def test_similar_trash_does_not_replace_existing_destination_when_declined(self):
         from similar_ui import SimilarDialog
         from PySide6.QtWidgets import QMessageBox
