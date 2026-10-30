@@ -301,6 +301,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(dialog.compare_canvas.path, group[-1])
         dialog.reject()
 
+    def test_similarity_prefetch_avoids_loading_flash_for_next_photo(self):
+        dialog = self._similar_dialog_with_copies()
+        group = dialog.groups[dialog.group_list.currentRow()]
+        next_path = group[1]
+        self.wait_for(lambda: (next_path, "preview") in dialog.image_cache)
+        dialog.navigate_preview(1)
+        self.assertEqual(dialog.preview.path, next_path)
+        self.assertFalse(dialog.preview.image.isNull())
+        self.assertFalse(dialog.preview.loading)
+        dialog.reject()
+
     def test_similarity_preview_controls_fit_and_mouse_wheel_zooms(self):
         dialog = self._similar_dialog_with_copies()
         dialog.resize(740, 450); self.application.processEvents()

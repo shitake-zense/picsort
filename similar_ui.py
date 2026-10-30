@@ -349,10 +349,23 @@ class SimilarDialog(QDialog):
             self.exit_compare()
         path = item.data(Qt.ItemDataRole.UserRole)
         self.preview.set_photo(path); self.active_canvas = self.preview
-        self.update_preview_info(); self.request_image(self.preview, "preview"); self.update_actions()
+        self.update_preview_info(); self.request_image(self.preview, "preview")
+        self.prefetch_neighbours(self.preview); self.update_actions()
 
-    def request_image(self, canvas, kind):
+    def prefetch_neighbours(self, canvas):
         path = canvas.path
+        row = self.group_list.currentRow()
+        group = self.groups[row] if 0 <= row < len(self.groups) else []
+        population = group if path in group else self.paths
+        if path not in population: return
+        index = population.index(path)
+        for offset in (1, -1):
+            target = index + offset
+            if 0 <= target < len(population):
+                self.request_image(canvas, "preview", path=population[target])
+
+    def request_image(self, canvas, kind, path=None):
+        path = path or canvas.path
         if not path: return
         key = (path, kind)
         if key in self.image_cache:
@@ -448,6 +461,7 @@ class SimilarDialog(QDialog):
             for i in targets:
                 canvas = (self.preview, self.compare_canvas)[i]
                 canvas.set_photo(population[indices[i] + direction]); self.request_image(canvas, "preview")
+                self.prefetch_neighbours(canvas)
             self.update_preview_info(); return
         row = self.items.currentRow()
         if row < 0: return
@@ -533,7 +547,8 @@ class SimilarDialog(QDialog):
         if canvas.path not in population: return
         index = population.index(canvas.path) + direction
         if 0 <= index < len(population):
-            canvas.set_photo(population[index]); self.request_image(canvas, "preview"); self.update_preview_info()
+            canvas.set_photo(population[index]); self.request_image(canvas, "preview")
+            self.prefetch_neighbours(canvas); self.update_preview_info()
 
     def toggle_dialog_fullscreen(self):
         if self.photo_only: self.exit_photo_fullscreen()
@@ -595,6 +610,7 @@ class SimilarDialog(QDialog):
         self.preview.set_photo(chosen[0]); self.compare_canvas.set_photo(chosen[1])
         self.compare_canvas.show(); self.compare_button.setText("比較を終了")
         self.request_image(self.preview, "preview"); self.request_image(self.compare_canvas, "preview")
+        self.prefetch_neighbours(self.preview); self.prefetch_neighbours(self.compare_canvas)
         self.update_preview_info(); self.update_actions()
 
     def exit_compare(self):
