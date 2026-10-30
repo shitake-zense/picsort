@@ -128,6 +128,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertGreaterEqual(self.window.width(), 740)
         self.assertEqual(self.window.height(), 450)
 
+    def test_compact_comparison_canvas_fits_inside_photo_area(self):
+        self.window.show_compare()
+        self.window.resize(740, 450)
+        self.application.processEvents()
+        for canvas in (self.window.canvas, self.window.compare_canvas):
+            point = canvas.mapTo(self.window.photo_page, canvas.rect().bottomRight())
+            self.assertLess(point.y(), self.window.photo_page.height())
+            self.assertLess(point.x(), self.window.photo_page.width())
+
     def test_compact_confirmation_keeps_execute_button_visible(self):
         self.window.make_decisions([self.paths[0]], "trash")
         dialog = ApplyPreviewDialog(self.window, self.window.pending())

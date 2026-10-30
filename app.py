@@ -228,7 +228,7 @@ class PhotoCanvas(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setMinimumSize(180, 180)
+        self.setMinimumSize(80, 80)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.image = QImage()
