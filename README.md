@@ -1,5 +1,15 @@
 # ピクソート 0.17 — 写真整理ツール
 
+## ダウンロード
+
+[ピクソート 0.17 のダウンロードページ](https://github.com/shitake-zense/picsort/releases/tag/v0.17.0)から、お使いのパソコンに合うZIPを選べます。
+
+- Windows：`PixSort-v0.17-Windows.zip`
+- Mac（Apple Silicon / Mシリーズ）：`PixSort-v0.17-Mac-Apple-Silicon.zip`
+- Mac（Intel）：`PixSort-v0.17-Mac-Intel.zip`
+
+ZIPを展開してから起動してください。Mac版は署名・公証されておらず、実機での画面操作は未確認です。
+
 JPEG・PNGの写真を、目で確認しながら仕分けるためのデスクトップアプリです。
 写真・作業記録はPC内だけで扱い、初回起動からインターネット接続は不要です。
 
