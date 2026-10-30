@@ -7,9 +7,9 @@ from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, ImageOps
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImageReader, QKeySequence, QPainter, QPen, QShortcut
-from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox,
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QHBoxLayout, QLabel, QMessageBox, QPushButton, QScrollArea,
     QSizePolicy, QTabWidget, QVBoxLayout, QWidget)
 
@@ -93,12 +93,13 @@ class PropertyDialog(QDialog):
 
 class CropCanvas(QWidget):
     selection_changed = Signal()
+    fullscreen_requested = Signal()
     def __init__(self, image, parent=None):
         super().__init__(parent)
         self.image = image; self.start = None; self.selection = QRectF(); self.ratio = 0
         self.zoom_scale = 1.0; self.offset = QPointF(); self.grid_enabled = True
         self.move_start = None; self.move_selection = QRectF()
-        self.pan_start = None; self.pan_offset = QPointF()
+        self.pan_start = None; self.pan_offset = QPointF(); self.pan_dragged = False
         self.setMinimumSize(160, 130)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setCursor(Qt.CursorShape.CrossCursor)
@@ -125,14 +126,19 @@ class CropCanvas(QWidget):
         elif event.button() == Qt.MouseButton.RightButton and not self.selection.isEmpty():
             self.move_start = self.image_point(event.position()); self.move_selection = QRectF(self.selection)
             self.setCursor(Qt.CursorShape.SizeAllCursor)
-        elif event.button() == Qt.MouseButton.MiddleButton and self.zoom_scale > 1:
+        elif event.button() == Qt.MouseButton.MiddleButton:
             self.pan_start = QPointF(event.position()); self.pan_offset = QPointF(self.offset)
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self.pan_dragged = False
+            if self.zoom_scale > 1: self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseMoveEvent(self, event):
         if self.pan_start is not None:
-            self.offset = self.pan_offset + event.position() - self.pan_start
-            self.clamp_offset(); self.update(); return
+            delta = event.position() - self.pan_start
+            if delta.toPoint().manhattanLength() >= QApplication.startDragDistance(): self.pan_dragged = True
+            if self.pan_dragged and self.zoom_scale > 1:
+                self.offset = self.pan_offset + delta
+                self.clamp_offset(); self.update()
+            return
         if self.move_start is not None:
             delta = self.image_point(event.position()) - self.move_start
             rect = QRectF(self.move_selection)
@@ -156,7 +162,9 @@ class CropCanvas(QWidget):
         elif event.button() == Qt.MouseButton.RightButton and self.move_start is not None:
             self.mouseMoveEvent(event); self.move_start = None; self.setCursor(Qt.CursorShape.CrossCursor)
         elif event.button() == Qt.MouseButton.MiddleButton and self.pan_start is not None:
-            self.mouseMoveEvent(event); self.pan_start = None; self.setCursor(Qt.CursorShape.CrossCursor)
+            self.mouseMoveEvent(event); clicked = not self.pan_dragged
+            self.pan_start = None; self.setCursor(Qt.CursorShape.CrossCursor)
+            if clicked: self.fullscreen_requested.emit()
 
     def clamp_offset(self):
         area = QRectF(self.rect()).adjusted(6, 6, -6, -6)
@@ -225,8 +233,11 @@ class CropCanvas(QWidget):
         painter.end()
 
 
-def save_crop(source, selection, expected):
+def save_crop(source, selection, expected, output_dir=None):
     source = Path(source)
+    destination = Path(output_dir) if output_dir is not None else source.parent
+    if not destination.is_dir():
+        raise OSError("保存先フォルダが見つかりません。別の保存先を選んでください。")
     if not matches(source, expected):
         raise OSError("元の写真が変更されたか見つかりません。開き直してください。")
     with Image.open(source) as opened:
@@ -254,7 +265,7 @@ def save_crop(source, selection, expected):
             if result.mode not in ("RGB", "L"): result = result.convert("RGB")
             options.update(quality=95, subsampling=0)
         requested = source.with_name(source.stem + "_切り抜き" + (".png" if fmt == "PNG" else ".jpg"))
-        target, stream = choose_target(requested, source.parent)
+        target, stream = choose_target(requested, destination)
         try:
             with stream:
                 result.save(stream, format=fmt, **options)
@@ -270,13 +281,22 @@ class CropDialog(QDialog):
     def __init__(self, path, parent=None):
         super().__init__(parent)
         self.path = path; self.saved_path = ""
-        self.setWindowTitle("写真を切り抜く")
-        _screen_dialog(self, 980, 720)
+        self.data_dir = getattr(parent, "data_dir", None)
+        settings = read_settings(self.data_dir) if self.data_dir else {}
+        saved_folder = settings.get("crop_output_dir", "")
+        self.output_dir = saved_folder if isinstance(saved_folder, str) and Path(saved_folder).is_absolute() else ""
+        self.ratio_swapped = False
+        self.editor_fullscreen = False; self.photo_fullscreen = False; self.return_fullscreen = False
+        self.setWindowTitle("写真を切り抜く"); _screen_dialog(self, 980, 720)
         layout = QVBoxLayout(self)
+        self.header_widget = QWidget(); heading = QHBoxLayout(self.header_widget); heading.setContentsMargins(0, 0, 0, 0)
         header = QLabel("残したい範囲をドラッグして選択")
-        header.setStyleSheet("font-size: 18px; font-weight: 700;"); layout.addWidget(header)
-        instruction = QLabel("左ドラッグ：範囲を選択 / 右ドラッグ：範囲を移動 / ホイール：拡大 / 押し込みドラッグ：表示位置を移動")
-        instruction.setWordWrap(True); layout.addWidget(instruction)
+        header.setStyleSheet("font-size: 18px; font-weight: 700;"); heading.addWidget(header); heading.addStretch()
+        self.fullscreen_button = QPushButton("全画面  F11")
+        self.fullscreen_button.clicked.connect(self.toggle_editor_fullscreen); heading.addWidget(self.fullscreen_button)
+        layout.addWidget(self.header_widget)
+        self.instruction = QLabel("左ドラッグ：範囲を選択 / 右ドラッグ：範囲を移動 / ホイール：拡大 / 押し込み：全画面（ドラッグで表示位置を移動）")
+        self.instruction.setWordWrap(True); layout.addWidget(self.instruction)
         self.expected = None
         try:
             self.expected = fingerprint(Path(path))
@@ -286,61 +306,168 @@ class CropDialog(QDialog):
         except (OSError, ValueError) as error:
             layout.addWidget(QLabel("写真を読み込めませんでした：" + str(error)))
             box = QDialogButtonBox(); box.addButton("閉じる", QDialogButtonBox.ButtonRole.RejectRole)
-            box.rejected.connect(self.reject); layout.addWidget(box)
+            box.rejected.connect(self.reject); layout.addWidget(box); self.fullscreen_button.setEnabled(False)
             return
-        row = QHBoxLayout(); row.addWidget(QLabel("比率"))
-        self.ratio = QComboBox()
+        self.controls_widget = QWidget(); row = QHBoxLayout(self.controls_widget); row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QLabel("比率")); self.ratio = QComboBox()
         for title, ratio in (("自由",0), ("1 : 1",1), ("4 : 3",4/3), ("3 : 2",3/2), ("16 : 9",16/9)):
             self.ratio.addItem(title, ratio)
-        row.addWidget(self.ratio); self.size_label = QLabel("範囲を選択してください")
-        row.addWidget(self.size_label); row.addStretch()
+        row.addWidget(self.ratio)
+        self.orientation_button = QPushButton("縦横切替"); self.orientation_button.setEnabled(False)
+        self.orientation_button.setToolTip("選択範囲の縦横を入れ替える")
+        self.orientation_button.setStyleSheet("padding: 5px 6px;"); self.orientation_button.clicked.connect(self.toggle_orientation)
+        row.addWidget(self.orientation_button)
+        self.size_label = QLabel("範囲を選択してください")
+        self.size_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        row.addWidget(self.size_label, 1)
         self.zoom_out = QPushButton("−"); self.zoom_in = QPushButton("＋"); self.fit_button = QPushButton("全体")
         for button in (self.zoom_out, self.zoom_in, self.fit_button):
-            button.setStyleSheet("padding: 5px 9px;"); row.addWidget(button)
+            button.setStyleSheet("padding: 5px 7px;"); row.addWidget(button)
         self.grid_button = QPushButton("グリッド ON"); self.grid_button.setCheckable(True)
         self.grid_button.setToolTip("選択範囲に三分割のガイド線を表示")
-        row.addWidget(self.grid_button); layout.addLayout(row)
-        self.canvas = CropCanvas(image); layout.addWidget(self.canvas, 1)
-        self.data_dir = getattr(parent, "data_dir", None)
-        grid_enabled = read_settings(self.data_dir).get("crop_grid", True) if self.data_dir else True
+        row.addWidget(self.grid_button); layout.addWidget(self.controls_widget)
+        self.canvas = CropCanvas(image); self.canvas.fullscreen_requested.connect(self.toggle_photo_fullscreen)
+        layout.addWidget(self.canvas, 1)
+        self.overlay = QWidget(self.canvas)
+        self.overlay.setStyleSheet("QWidget { background: #20262e; border-radius: 6px; }")
+        overlay_row = QHBoxLayout(self.overlay); overlay_row.setContentsMargins(5, 5, 5, 5); overlay_row.setSpacing(4)
+        self.overlay_orientation = QPushButton("縦横切替"); self.overlay_orientation.clicked.connect(self.toggle_orientation)
+        self.overlay_grid = QPushButton("グリッド"); self.overlay_grid.setCheckable(True)
+        self.overlay_grid.toggled.connect(self.grid_button.setChecked)
+        self.overlay_save = QPushButton("保存"); self.overlay_save.clicked.connect(self.save)
+        self.overlay_exit = QPushButton("全画面を終了  Esc"); self.overlay_exit.clicked.connect(self.exit_photo_fullscreen)
+        for control in (self.overlay_orientation, self.overlay_grid, self.overlay_save, self.overlay_exit): overlay_row.addWidget(control)
+        self.overlay.hide(); self.canvas.installEventFilter(self)
+        grid_enabled = settings.get("crop_grid", True)
         self.grid_button.setChecked(grid_enabled if isinstance(grid_enabled, bool) else True)
         self.set_grid(self.grid_button.isChecked(), save=False)
         self.grid_button.toggled.connect(self.set_grid)
-        self.zoom_out.clicked.connect(lambda: self.canvas.zoom(.8))
-        self.zoom_in.clicked.connect(lambda: self.canvas.zoom(1.25))
+        self.zoom_out.clicked.connect(lambda: self.canvas.zoom(.8)); self.zoom_in.clicked.connect(lambda: self.canvas.zoom(1.25))
         self.fit_button.clicked.connect(self.canvas.fit_image)
         self.zoom_shortcuts = []
         for sequence, factor in (("Ctrl+Up", 1.25), ("Ctrl+Down", .8), ("Ctrl++", 1.25), ("Ctrl+-", .8)):
             shortcut = QShortcut(QKeySequence(sequence), self)
             shortcut.activated.connect(lambda n=factor: self.canvas.zoom(n)); self.zoom_shortcuts.append(shortcut)
+        self.fullscreen_shortcut = QShortcut(QKeySequence("F11"), self)
+        self.fullscreen_shortcut.activated.connect(self.toggle_editor_fullscreen)
+        self.photo_fullscreen_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
+        self.photo_fullscreen_shortcut.activated.connect(self.toggle_photo_fullscreen)
         self.canvas.selection_changed.connect(self.update_selection)
         self.ratio.currentIndexChanged.connect(self.change_ratio)
-        note = QLabel("JPEGは再圧縮されます。一部の付加情報は引き継がれない場合があります。")
-        note.setWordWrap(True); layout.addWidget(note)
-        actions = QDialogButtonBox()
-        actions.addButton("キャンセル", QDialogButtonBox.ButtonRole.RejectRole)
-        self.save_button = actions.addButton("別ファイルで保存", QDialogButtonBox.ButtonRole.AcceptRole)
-        self.save_button.setEnabled(False); actions.rejected.connect(self.reject); actions.accepted.connect(self.save)
-        layout.addWidget(actions)
+        self.destination_widget = QWidget(); destination_row = QHBoxLayout(self.destination_widget); destination_row.setContentsMargins(0, 0, 0, 0)
+        self.destination_label = QLabel(); self.destination_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        destination_row.addWidget(self.destination_label, 1)
+        self.choose_destination_button = QPushButton("保存先を選ぶ"); self.choose_destination_button.clicked.connect(self.choose_destination)
+        self.reset_destination_button = QPushButton("元のフォルダ"); self.reset_destination_button.clicked.connect(self.use_original_folder)
+        destination_row.addWidget(self.choose_destination_button); destination_row.addWidget(self.reset_destination_button)
+        layout.addWidget(self.destination_widget); self.update_destination_label()
+        self.note = QLabel("元画像は残ります。JPEGは再圧縮され、一部の付加情報は引き継がれない場合があります。")
+        self.note.setWordWrap(True); layout.addWidget(self.note)
+        self.actions = QDialogButtonBox()
+        self.actions.addButton("キャンセル", QDialogButtonBox.ButtonRole.RejectRole)
+        self.save_button = self.actions.addButton("別ファイルで保存", QDialogButtonBox.ButtonRole.AcceptRole)
+        self.save_button.setEnabled(False); self.overlay_save.setEnabled(False)
+        self.actions.rejected.connect(self.reject); self.actions.accepted.connect(self.save)
+        layout.addWidget(self.actions); self.change_ratio()
+
+    def destination(self):
+        return Path(self.output_dir) if self.output_dir else Path(self.path).parent
+
+    def update_destination_label(self):
+        target = self.destination()
+        self.destination_label.setText("保存先：" + (str(target) if self.output_dir else "元のフォルダ（" + str(target) + "）"))
+        self.destination_label.setToolTip(str(target))
+        self.reset_destination_button.setEnabled(bool(self.output_dir))
+        self.overlay_save.setToolTip("保存先：" + str(target))
+
+    def choose_destination(self):
+        folder = QFileDialog.getExistingDirectory(self, "切り抜きの保存先を選択", str(self.destination()))
+        if folder:
+            self.output_dir = str(Path(folder).resolve())
+            if self.data_dir: write_setting(self.data_dir, "crop_output_dir", self.output_dir)
+            self.update_destination_label()
+
+    def use_original_folder(self):
+        self.output_dir = ""
+        if self.data_dir: write_setting(self.data_dir, "crop_output_dir", "")
+        self.update_destination_label()
 
     def set_grid(self, enabled, save=True):
         self.canvas.grid_enabled = enabled
         self.grid_button.setText("グリッド ON" if enabled else "グリッド OFF")
+        self.overlay_grid.blockSignals(True); self.overlay_grid.setChecked(enabled); self.overlay_grid.blockSignals(False)
+        self.overlay_grid.setText("グリッド ON" if enabled else "グリッド OFF")
         self.canvas.update()
         if save and self.data_dir: write_setting(self.data_dir, "crop_grid", bool(enabled))
 
     def change_ratio(self):
-        self.canvas.ratio = self.ratio.currentData(); self.canvas.selection = QRectF()
+        base = self.ratio.currentData()
+        switchable = bool(base and base != 1)
+        ratio = (1 / base if self.ratio_swapped else base) if base else 0
+        self.canvas.ratio = ratio
+        self.orientation_button.setEnabled(switchable); self.overlay_orientation.setEnabled(switchable)
+        text = ("横長に変更" if self.ratio_swapped else "縦長に変更") if switchable else "縦横切替"
+        self.orientation_button.setText(text); self.overlay_orientation.setText(text)
+        if ratio and not self.canvas.selection.isEmpty():
+            rect = self.canvas.selection; area = rect.width() * rect.height(); center = rect.center()
+            width = math.sqrt(area * ratio); height = width / ratio
+            scale = min(1.0, self.canvas.image.width() / width, self.canvas.image.height() / height)
+            width *= scale; height *= scale
+            left = max(0.0, min(self.canvas.image.width() - width, center.x() - width / 2))
+            top = max(0.0, min(self.canvas.image.height() - height, center.y() - height / 2))
+            self.canvas.selection = QRectF(left, top, width, height)
         self.canvas.update(); self.update_selection()
+        if self.photo_fullscreen: self.position_overlay()
+
+    def toggle_orientation(self):
+        if self.ratio.currentData() and self.ratio.currentData() != 1:
+            self.ratio_swapped = not self.ratio_swapped; self.change_ratio()
 
     def update_selection(self):
-        selection = self.canvas.selected_pixels(); self.save_button.setEnabled(bool(selection))
+        selection = self.canvas.selected_pixels(); self.save_button.setEnabled(bool(selection)); self.overlay_save.setEnabled(bool(selection))
         self.size_label.setText(f"{selection[2]-selection[0]:,} × {selection[3]-selection[1]:,} px" if selection else "範囲を選択してください")
+
+    def toggle_editor_fullscreen(self):
+        if not hasattr(self, "canvas"): return
+        if self.photo_fullscreen: self.exit_photo_fullscreen()
+        if self.editor_fullscreen:
+            self.editor_fullscreen = False; self.showNormal(); self.fullscreen_button.setText("全画面  F11")
+        else:
+            self.editor_fullscreen = True; self.showFullScreen(); self.fullscreen_button.setText("全画面を終了  F11")
+
+    def toggle_photo_fullscreen(self):
+        if self.photo_fullscreen: self.exit_photo_fullscreen(); return
+        self.return_fullscreen = self.editor_fullscreen; self.photo_fullscreen = True
+        for widget in (self.header_widget, self.instruction, self.controls_widget, self.destination_widget, self.note, self.actions): widget.hide()
+        self.layout().setContentsMargins(0, 0, 0, 0); self.showFullScreen()
+        self.overlay.show(); self.position_overlay()
+
+    def exit_photo_fullscreen(self):
+        if not self.photo_fullscreen: return
+        self.photo_fullscreen = False; self.overlay.hide(); self.layout().setContentsMargins(9, 9, 9, 9)
+        for widget in (self.header_widget, self.instruction, self.controls_widget, self.destination_widget, self.note, self.actions): widget.show()
+        if self.return_fullscreen: self.showFullScreen()
+        else: self.showNormal()
+
+    def position_overlay(self):
+        self.overlay.adjustSize()
+        self.overlay.move(max(4, self.canvas.width() - self.overlay.width() - 12), 12)
+        self.overlay.raise_()
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "canvas", None) and event.type() == QEvent.Type.Resize and self.photo_fullscreen:
+            self.position_overlay()
+        return super().eventFilter(obj, event)
+
+    def reject(self):
+        if self.photo_fullscreen: self.exit_photo_fullscreen()
+        elif self.editor_fullscreen: self.toggle_editor_fullscreen()
+        else: super().reject()
 
     def save(self):
         selection = self.canvas.selected_pixels()
         if not selection: return
-        try: self.saved_path = save_crop(self.path, selection, self.expected)
+        try: self.saved_path = save_crop(self.path, selection, self.expected, self.destination())
         except (OSError, ValueError, TypeError) as error:
             QMessageBox.warning(self, "保存できません", str(error)); return
         self.accept()
@@ -363,7 +490,7 @@ HELP = [
  ("Ctrl＋↑ / ↓", "キーボードで拡大・縮小します。Ctrl＋＋ / －も使えます。"),
  ("Ctrl+Shift＋矢印", "拡大中の表示位置を移動します。"),
  ("プロパティ / Alt+Enter", "画像サイズ、撮影日時、カメラ設定など、記録されている情報を表示します。"),
- ("切り抜き / Ctrl+Shift+X", "左ドラッグで選択、右ドラッグで範囲を移動。ホイールで拡大し、押し込みドラッグで表示位置を移動します。グリッドは切り替えられます。元画像を残して別ファイルに保存します。"),
+ ("切り抜き / Ctrl+Shift+X", "左ドラッグで選択、右ドラッグで移動。比率の縦横を切り替えられます。F11で編集画面を全画面にし、ホイール押し込みで写真だけの全画面にします。保存先を選べ、元画像は残ります。"),
  ("似た写真を探す", "撮影時刻と構図、または構図だけで候補を探します。Shift＋右クリックで次のグループに進みます。削除の判断は自分で行います。"),
  ("画面幅の調整", "画面の縦の境界線をドラッグすると、一覧やプレビューなどの幅を変えられます。")]),
  ("整理する", [("行き先のキー", "写真を指定したフォルダへ振り分ける候補にして次へ進みます。"),

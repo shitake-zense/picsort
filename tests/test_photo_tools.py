@@ -112,6 +112,7 @@ class PhotoToolsTests(unittest.TestCase):
         QTest.mouseMove(canvas,pos+QPoint(40,30))
         QTest.mouseRelease(canvas,Qt.MouseButton.MiddleButton,pos=pos+QPoint(40,30))
         self.assertNotEqual(canvas.offset,old); self.assertEqual(canvas.selection,initial)
+        self.assertFalse(dialog.photo_fullscreen)
         canvas.fit_image(); self.assertEqual(canvas.zoom_scale,1.0); self.assertEqual(canvas.offset,QPointF())
         dialog.close()
 
@@ -127,6 +128,90 @@ class PhotoToolsTests(unittest.TestCase):
         second=CropDialog(str(self.photo),parent)
         self.assertFalse(second.grid_button.isChecked());self.assertFalse(second.canvas.grid_enabled)
         second.close();parent.close()
+
+    def test_crop_ratio_orientation_keeps_selection_inside_photo(self):
+        dialog = CropDialog(str(self.photo)); dialog.show(); self.app.processEvents()
+        dialog.canvas.selection = QRectF(8, 20, 50, 60)
+        dialog.ratio.setCurrentIndex(2)
+        before = QRectF(dialog.canvas.selection)
+        self.assertAlmostEqual(before.width() / before.height(), 4 / 3)
+        dialog.orientation_button.click()
+        after = dialog.canvas.selection
+        self.assertAlmostEqual(after.width() / after.height(), 3 / 4)
+        self.assertAlmostEqual(after.center().x(), before.center().x())
+        self.assertAlmostEqual(after.center().y(), before.center().y())
+        self.assertGreaterEqual(after.left(), 0); self.assertGreaterEqual(after.top(), 0)
+        self.assertLessEqual(after.right(), dialog.canvas.image.width())
+        self.assertLessEqual(after.bottom(), dialog.canvas.image.height())
+        dialog.orientation_button.click()
+        self.assertAlmostEqual(dialog.canvas.selection.width() / dialog.canvas.selection.height(), 4 / 3)
+        dialog.ratio.setCurrentIndex(1)
+        self.assertFalse(dialog.orientation_button.isEnabled())
+        dialog.close()
+
+    def test_crop_destination_is_remembered_and_can_be_reset(self):
+        destination = self.root / 'destination'; destination.mkdir()
+        parent = QWidget(); parent.data_dir = self.root
+        dialog = CropDialog(str(self.photo), parent)
+        with patch('photo_tools.QFileDialog.getExistingDirectory', return_value=str(destination)):
+            dialog.choose_destination()
+        self.assertEqual(dialog.destination(), destination.resolve())
+        dialog.close()
+        second = CropDialog(str(self.photo), parent)
+        self.assertEqual(second.destination(), destination.resolve())
+        with patch('photo_tools.QFileDialog.getExistingDirectory', return_value=''):
+            second.choose_destination()
+        self.assertEqual(second.destination(), destination.resolve())
+        second.use_original_folder(); second.close()
+        third = CropDialog(str(self.photo), parent)
+        self.assertEqual(third.destination(), self.photo.parent)
+        third.close(); parent.close()
+
+    def test_crop_saves_to_selected_folder_without_overwriting(self):
+        destination = self.root / 'destination'; destination.mkdir()
+        original = self.photo.read_bytes()
+        existing = destination / 'sample_切り抜き.jpg'; existing.write_bytes(b'existing')
+        result = Path(save_crop(self.photo, (10, 20, 60, 90), fingerprint(self.photo), destination))
+        self.assertEqual(result.parent, destination)
+        self.assertNotEqual(result, existing)
+        self.assertEqual(existing.read_bytes(), b'existing')
+        self.assertEqual(self.photo.read_bytes(), original)
+        with Image.open(result) as image: self.assertEqual(image.size, (50, 70))
+        with self.assertRaises(OSError):
+            save_crop(self.photo, (10, 20, 60, 90), fingerprint(self.photo), self.root / 'missing')
+        self.assertFalse((self.root / 'missing').exists())
+
+    def test_crop_photo_fullscreen_retains_selection_and_restores_editor(self):
+        dialog = CropDialog(str(self.photo)); dialog.show(); self.app.processEvents()
+        dialog.ratio.setCurrentIndex(2)
+        dialog.canvas.selection = QRectF(10, 20, 30, 40); dialog.update_selection()
+        selection = QRectF(dialog.canvas.selection)
+        QTest.mouseClick(dialog.canvas, Qt.MouseButton.MiddleButton, pos=dialog.canvas.image_rect().center().toPoint())
+        self.app.processEvents()
+        self.assertTrue(dialog.photo_fullscreen); self.assertTrue(dialog.isFullScreen())
+        self.assertTrue(dialog.overlay.isVisible()); self.assertTrue(dialog.overlay_save.isEnabled())
+        self.assertEqual(dialog.canvas.selection, selection)
+        dialog.overlay_grid.click(); self.assertFalse(dialog.grid_button.isChecked())
+        dialog.exit_photo_fullscreen(); self.app.processEvents()
+        self.assertFalse(dialog.photo_fullscreen); self.assertFalse(dialog.isFullScreen())
+        self.assertEqual(dialog.canvas.selection, selection)
+        dialog.toggle_editor_fullscreen(); self.app.processEvents()
+        self.assertTrue(dialog.isFullScreen())
+        dialog.toggle_photo_fullscreen(); dialog.exit_photo_fullscreen(); self.app.processEvents()
+        self.assertTrue(dialog.isFullScreen())
+        dialog.toggle_editor_fullscreen(); dialog.close()
+
+    def test_crop_fullscreen_save_uses_selected_destination(self):
+        destination = self.root / 'destination'; destination.mkdir()
+        parent = QWidget(); parent.data_dir = self.root
+        dialog = CropDialog(str(self.photo), parent); dialog.show(); self.app.processEvents()
+        with patch('photo_tools.QFileDialog.getExistingDirectory', return_value=str(destination)):
+            dialog.choose_destination()
+        dialog.canvas.selection = QRectF(10, 20, 30, 40); dialog.update_selection()
+        dialog.toggle_photo_fullscreen(); self.app.processEvents(); dialog.overlay_save.click()
+        self.assertEqual(Path(dialog.saved_path).parent, destination.resolve())
+        with Image.open(dialog.saved_path) as result: self.assertEqual(result.size, (30, 40))
+        self.assertTrue(self.photo.exists()); parent.close()
 
     def test_guide_is_categorized(self):
         dialog=HelpDialog(); dialog.show(); self.app.processEvents()

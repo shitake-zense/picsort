@@ -57,6 +57,17 @@ class WorkflowTests(unittest.TestCase):
             time.sleep(.01)
         self.fail("Timed out waiting for UI operation")
 
+    def test_crop_refreshes_only_when_saved_in_current_folder(self):
+        from PySide6.QtWidgets import QDialog
+        with patch('app.CropDialog') as crop, patch.object(self.window, 'refresh_folder') as refresh:
+            crop.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            crop.return_value.saved_path = str(self.root / 'other' / 'crop.jpg')
+            self.window.show_crop()
+            refresh.assert_not_called()
+            crop.return_value.saved_path = str(self.photos / 'crop.jpg')
+            self.window.show_crop()
+            refresh.assert_called_once_with(success_prefix='切り抜きを保存しました：crop.jpg。')
+
     def test_fullscreen_status_follows_each_photo_and_clear(self):
         destination = self.window.state["destinations"][0]["path"]
         self.assertTrue(self.window.make_decisions([self.paths[0]], "file", destination))

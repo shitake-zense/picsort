@@ -29,7 +29,7 @@ from photo_tools import PropertyDialog, CropDialog, HelpDialog
 from similar_ui import SimilarDialog
 from layout_settings import configure_splitter, restore_splitter
 
-VERSION = "0.16.0"
+VERSION = "0.17.0"
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets"
 
 
@@ -1411,7 +1411,7 @@ class Window(QMainWindow):
         self.submit(scan, finished)
         self.remember_root()
 
-    def refresh_folder(self):
+    def refresh_folder(self, *_, success_prefix=""):
         if not self.ready():
             return
         self.save()
@@ -1471,7 +1471,7 @@ class Window(QMainWindow):
             missing = sum(d.get("action") in ("trash", "file") and p not in existing
                           for p, d in self.state.get("decisions", {}).items())
             notice = (f"  見つからない候補 {missing}件は記録を保持しています。" if missing else "")
-            self.update_footer(f"フォルダを更新しました。写真 {len(self.entries):,}枚。" + notice)
+            self.update_footer(success_prefix + f"フォルダを更新しました。写真 {len(self.entries):,}枚。" + notice)
 
         self.submit(scan, finished)
 
@@ -2739,8 +2739,11 @@ class Window(QMainWindow):
             return
         dialog = CropDialog(path, self)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.saved_path:
-            self.update_footer("切り抜いた写真を別ファイルで保存しました：" + Path(dialog.saved_path).name)
-            self.refresh_folder()
+            saved = Path(dialog.saved_path)
+            if saved.parent.resolve() == Path(self.root).resolve():
+                self.refresh_folder(success_prefix=f"切り抜きを保存しました：{saved.name}。")
+            else:
+                self.update_footer(f"切り抜きを保存しました：{saved}")
 
     def show_help(self):
         HelpDialog(self).exec()
@@ -2915,7 +2918,8 @@ def main():
         migrated = False
         if (getattr(sys, "frozen", False) and "PIXSORT_DATA_DIR" not in os.environ and "KOMA_DATA_DIR" not in os.environ):
             parent = application_directory().parent
-            for previous in (parent / "PixSort-v0.15-Windows" / "PixSortData",
+            for previous in (parent / "PixSort-v0.16-Windows" / "PixSortData",
+                             parent / "PixSort-v0.15-Windows" / "PixSortData",
                              parent / "PixSort-v0.14-Windows" / "PixSortData",
                              parent / "PixSort-v0.13-Windows" / "PixSortData",
                              parent / "PixSort-v0.12-Windows" / "PixSortData",
