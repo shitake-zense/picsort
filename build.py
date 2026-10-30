@@ -19,7 +19,7 @@ if sys.platform == "win32":
     command += ["--icon", str(root / "assets/koma.ico")]
 elif sys.platform == "darwin":
     command += ["--osx-bundle-identifier", "local.pixsort.photos"]
-for excluded in ("PIL", "numpy", "pandas", "matplotlib", "scipy", "tkinter", "IPython", "send2trash"):
+for excluded in ("numpy", "pandas", "matplotlib", "scipy", "tkinter", "IPython", "send2trash"):
     command += ["--exclude-module", excluded]
 command.append(str(root / "app.py"))
 environment = os.environ.copy()

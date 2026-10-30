@@ -120,6 +120,23 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(default_data_directory("darwin", home),
                          home / "Library" / "Application Support" / "PixSort")
 
+    def test_compact_window_keeps_footer_and_apply_visible(self):
+        self.window.resize(740, 450)
+        self.application.processEvents()
+        bottom = self.window.apply_button.mapTo(self.window, self.window.apply_button.rect().bottomRight())
+        self.assertLess(bottom.y(), self.window.height())
+        self.assertGreaterEqual(self.window.width(), 740)
+        self.assertEqual(self.window.height(), 450)
+
+    def test_compact_confirmation_keeps_execute_button_visible(self):
+        self.window.make_decisions([self.paths[0]], "trash")
+        dialog = ApplyPreviewDialog(self.window, self.window.pending())
+        dialog.resize(650, 400); dialog.show(); self.application.processEvents()
+        bottom = dialog.go_button.mapTo(dialog, dialog.go_button.rect().bottomRight())
+        self.assertLess(bottom.y(), dialog.height())
+        self.assertLessEqual(dialog.height(), 400)
+        dialog.close()
+
     def test_folder_navigation_and_destinations_are_scoped(self):
         nested = self.photos / "既存フォルダ"
         nested.mkdir()

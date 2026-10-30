@@ -9,6 +9,7 @@ LGPLで認められたライブラリの改変・デバッグのためのリバ�
 | PySide6 Essentials / Shiboken6 | 6.12.0 | LGPL v3。https://code.qt.io/cgit/pyside/pyside-setup.git/ （v6.12.0） |
 | Qt Core / Gui / Widgets / Network / Svg | 6.12.0 | LGPL v3。https://code.qt.io/cgit/qt/qtbase.git/ 、https://code.qt.io/cgit/qt/qtsvg.git/ （v6.12.0） |
 | CPython | 3.12.14 | PSFライセンス。https://github.com/python/cpython/tree/v3.12.14 |
+| Pillow | 12.3.0 | HPND。https://github.com/python-pillow/Pillow/tree/12.3.0 |
 | SQLite | Python付属 | Public domain。https://sqlite.org/copyright.html |
 | PyInstaller bootloader | 6.22.3 | GPL＋配布例外。https://github.com/pyinstaller/pyinstaller/tree/v6.22.3 |
 

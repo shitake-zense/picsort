@@ -25,8 +25,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDial
     QStyledItemDelegate, QTabWidget, QVBoxLayout, QWidget)
 
 from core import SUPPORTED, Store, apply_decision, fingerprint, is_within
+from photo_tools import PropertyDialog, CropDialog, HelpDialog
 
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets"
 
 
@@ -575,7 +576,9 @@ class ApplyPreviewDialog(QDialog):
     def __init__(self, window, pending):
         super().__init__(window)
         self.setWindowTitle("整理内容を確認")
-        self.resize(1080, 650)
+        screen = self.screen() or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else QRect(0, 0, 1080, 650)
+        self.resize(min(1080, available.width() - 30), min(650, available.height() - 30))
         self.window = window
         self.pending = dict(pending)
         self.cancelled_paths = set()
@@ -597,17 +600,19 @@ class ApplyPreviewDialog(QDialog):
         layout.addWidget(message)
         content = QHBoxLayout()
         self.tabs = QTabWidget()
-        self.tabs.setMinimumWidth(330)
+        self.tabs.setMinimumWidth(200)
         self.tabs.setMaximumWidth(530)
         self.tabs.setUsesScrollButtons(True)
         content.addWidget(self.tabs, 2)
         right = QVBoxLayout()
         self.detail = label("写真を選択してください", "muted")
         self.detail.setWordWrap(True)
+        self.detail.setMaximumHeight(85)
+        self.detail.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         right.addWidget(self.detail)
         self.preview = QLabel("写真を選択してください")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview.setMinimumSize(300, 260)
+        self.preview.setMinimumSize(150, 120)
         self.preview.setStyleSheet("background: #101318; color: #ccd4df; border: 1px solid #39424f;")
         right.addWidget(self.preview, 1)
         content.addLayout(right, 3)
@@ -698,6 +703,7 @@ class ApplyPreviewDialog(QDialog):
         target = "OSのごみ箱" if decision.get("action") == "trash" else decision.get("destination", "")
         status = "候補解除（反映対象外）" if path in self.cancelled_paths else ("削除候補" if decision.get("action") == "trash" else self.verb + "予定")
         self.detail.setText(status + "\n" + path + "\n→ " + target)
+        self.detail.setToolTip(path + "\n→ " + target)
 
     def toggle_candidate(self, item):
         path, decision = item.data(Qt.ItemDataRole.UserRole)
@@ -855,8 +861,10 @@ class Window(QMainWindow):
         self.was_maximized = False
         self.film_items = {}
         self.setWindowTitle(f"ピクソート — 写真整理  {VERSION}")
-        self.resize(1320, 880)
-        self.setMinimumSize(1000, 680)
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else QRect(0, 0, 1320, 880)
+        self.resize(min(1320, available.width()), min(880, available.height()))
+        self.setMinimumSize(740, 450)
         if (ASSETS / "koma.ico").exists():
             self.setWindowIcon(QIcon(str(ASSETS / "koma.ico")))
         self.build_ui()
@@ -877,7 +885,8 @@ class Window(QMainWindow):
         brand = label("ピクソート", "brand")
         header_layout.addWidget(brand)
         header_layout.addSpacing(16)
-        header_layout.addWidget(label("写真を見ながら、迷わず整理。", "muted"))
+        self.brand_tagline = label("写真を見ながら、迷わず整理。", "muted")
+        header_layout.addWidget(self.brand_tagline)
         header_layout.addStretch()
         self.fullscreen_button = button("全画面  F11", self.toggle_app_fullscreen)
         self.refresh_button = button("↻  更新", self.refresh_folder)
@@ -993,13 +1002,22 @@ class Window(QMainWindow):
         self.pin_button.setVisible(False)
         toolbar.addWidget(self.pin_button)
         toolbar.addStretch()
+        content.addLayout(toolbar)
+        tools_row = QHBoxLayout()
+        self.property_button = button("ⓘ  プロパティ", self.show_properties)
+        self.crop_button = button("切り抜き", self.show_crop)
+        self.property_button.setToolTip("操作中の写真の情報を表示")
+        self.crop_button.setToolTip("操作中の写真を別ファイルに切り抜く")
+        tools_row.addWidget(self.property_button)
+        tools_row.addWidget(self.crop_button)
+        tools_row.addStretch()
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["確定時：移動", "確定時：コピー"])
         self.mode_combo.currentIndexChanged.connect(self.mode_changed)
-        toolbar.addWidget(self.mode_combo)
+        tools_row.addWidget(self.mode_combo)
         self.toolbar_widgets = [self.filter_combo, self.single_button, self.compare_button,
-                                self.grid_button, self.pin_button, self.mode_combo]
-        content.addLayout(toolbar)
+                                self.grid_button, self.pin_button, self.property_button, self.crop_button, self.mode_combo]
+        content.addLayout(tools_row)
         info = QHBoxLayout()
         self.file_label = label("フォルダを開いて写真を選びましょう")
         self.file_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -1130,7 +1148,9 @@ class Window(QMainWindow):
         self.film.setGridSize(QSize(96, 70))
         self.film.setUniformItemSizes(True)
         self.film.setFixedHeight(75)
-        self.film.setFixedWidth(7 * 96)
+        self.film.setMaximumWidth(7 * 96)
+        self.film.setMinimumWidth(0)
+        self.film.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.film.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.film.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.film.itemClicked.connect(self.film_clicked)
@@ -1148,12 +1168,13 @@ class Window(QMainWindow):
         foot = QHBoxLayout(footer)
         foot.setContentsMargins(14, 7, 14, 7)
         self.status_label = label("フォルダを開いて始めましょう。", "muted")
-        self.status_label.setWordWrap(True)
+        self.status_label.setWordWrap(False)
+        self.status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         foot.addWidget(self.status_label, 1)
         self.undo_button = button("取り消す", self.undo, "quiet")
         foot.addWidget(self.undo_button)
         self.apply_button = button("整理を反映", self.confirm_apply, "primary")
-        self.apply_button.setMinimumWidth(160)
+        self.apply_button.setMinimumWidth(110)
         foot.addWidget(self.apply_button)
         outer.addWidget(footer)
         self.rebuild_destinations()
@@ -1170,6 +1191,8 @@ class Window(QMainWindow):
                 ("Escape", "全画面を終了", self.exit_fullscreen),
                 ("F11", "アプリの全画面", self.toggle_app_fullscreen),
                 ("F5", "フォルダを更新", self.refresh_folder),
+                ("Alt+Enter", "プロパティ", self.show_properties),
+                ("Ctrl+Shift+X", "切り抜き", self.show_crop),
                 ("Alt+1", "1枚表示", self.show_single),
                 ("Alt+2", "2枚比較", self.show_compare),
                 ("Alt+3", "チェック一覧", lambda: self.set_view(True)),
@@ -1929,6 +1952,11 @@ class Window(QMainWindow):
                     self.film_items[path] = self.film.count() - 1
             self.film.setCurrentRow(3)
         self.film.blockSignals(False)
+        def center_film():
+            item = self.film.currentItem()
+            if item:
+                self.film.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+        QTimer.singleShot(0, center_film)
         QTimer.singleShot(0, self.request_thumbnails)
 
     def refresh_current(self):
@@ -2255,7 +2283,12 @@ class Window(QMainWindow):
             if path in self.visible:
                 index = self.visible.index(path)
                 icon = QIcon(QPixmap.fromImage(image))
-                self.grid.item(index).setIcon(icon)
+                # Updating a thumbnail emits itemChanged; it is not a check change.
+                blocked = self.grid.blockSignals(True)
+                try:
+                    self.grid.item(index).setIcon(icon)
+                finally:
+                    self.grid.blockSignals(blocked)
                 film_item = self.film_item(path)
                 if film_item:
                     film_item.setIcon(icon)
@@ -2293,6 +2326,8 @@ class Window(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, "brand_tagline"):
+            self.brand_tagline.setVisible(self.width() >= 980 and not self.photo_fullscreen)
         if hasattr(self, "first_overlay") and self.photo_fullscreen:
             QTimer.singleShot(0, self.position_first_overlay)
         QTimer.singleShot(80, self.request_thumbnails)
@@ -2512,6 +2547,8 @@ class Window(QMainWindow):
         self.undo_button.setEnabled(bool(self.undo_stack) and self.ready())
         self.open_button.setEnabled(not self.applying)
         self.refresh_button.setEnabled(self.ready())
+        self.property_button.setEnabled(self.ready())
+        self.crop_button.setEnabled(self.ready())
         self.parent_button.setEnabled(self.ready() and Path(self.root).parent != Path(self.root))
         self.folder_list.setEnabled(self.ready())
         self.create_folder_button.setEnabled(self.ready())
@@ -2607,27 +2644,31 @@ class Window(QMainWindow):
         layout.addWidget(button("閉じる", dialog.accept))
         dialog.exec()
 
+    def selected_photo_path(self):
+        if self.stack.currentIndex() == 0:
+            return self.active_path()
+        item = self.grid.currentItem()
+        return item.data(Qt.ItemDataRole.UserRole) if item else ""
+
+    def show_properties(self):
+        path = self.selected_photo_path()
+        if self.ready() and path:
+            PropertyDialog(path, self).exec()
+        else:
+            self.update_footer("写真を選んでからプロパティを開いてください。")
+
+    def show_crop(self):
+        path = self.selected_photo_path()
+        if not self.ready() or not path:
+            self.update_footer("写真を選んでから切り抜きを開いてください。")
+            return
+        dialog = CropDialog(path, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.saved_path:
+            self.update_footer("切り抜いた写真を別ファイルで保存しました：" + Path(dialog.saved_path).name)
+            self.refresh_folder()
+
     def show_help(self):
-        dialog = QDialog(self)
-        dialog.setWindowTitle("ピクソート 操作ガイド")
-        dialog.resize(680, 580)
-        layout = QVBoxLayout(dialog)
-        text = QPlainTextEdit()
-        text.setReadOnly(True)
-        text.setPlainText(
-            "ピクソート  /  写真を見ながら、迷わず整理。\n\n"
-            "1. フォルダを開く\n右上の［更新］またはF5で、外部で追加・変更された写真とフォルダを再読み込みします。候補や表示位置はできるだけ維持します。\n開いたフォルダ直下のJPEG・PNGを表示します。左の一覧に既存のサブフォルダが表示されます。一覧で選んで［開く］、またはダブルクリックで移動できます。［↑ 親フォルダへ］で戻ります。［＋ この中にフォルダを作成］で作成すると振り分け先にも追加します（上限9件）。親フォルダも振り分け先に追加できます。RAWは未対応です。\n\n"
-            "2. 写真の確認\n写真番号を入力してEnterで現在の一覧内の写真へ移動できます。2枚比較では操作対象だけを移動します。\n左クリック / ←：前へ　右クリック / →：次へ。クリックを長押しすると連続で送ります。\nCtrl+F：写真の全画面　Ctrl+O：フォルダを開く　Ctrl+N：フォルダ作成　Alt+↑：親フォルダへ\nCtrl＋↑ / Ctrl＋↓（Ctrl＋＋ / Ctrl＋－でも可）：拡大・縮小　Ctrl+Shift＋矢印：拡大位置の移動\nShift＋左クリック：削除候補にして次へ（X / Deleteでも可）\nCtrl＋左クリック：その写真の削除・振り分け候補を解除（取り消すで戻せます）\n最後の写真では［最初の写真へ］、Homeキーでも最初へ戻れます。\n写真の上でホイール：ポインターの位置を拡大・縮小\nホイール押し込み：全画面と通常画面を切り替え。Escでも戻れます。\n拡大中は左ドラッグで表示位置を移動。Z / 原寸で確認ボタンでピントを原寸で確認でき、画面に合わせるで写真全体に戻せます。写真全画面では整理予定の写真にファイル名と予定を表示します。\n下のサムネイルは中央が現在の写真、左が前、右が次です。振り分け先は［頭文字］で表示し、同じ頭文字には番号を付けます。左の振り分け先にも同じ記号を表示します。前後最大3枚ずつ表示します。\nH：保留にして次へ　0：操作対象の指定を解除\nCtrl+Z / Macでは⌘Z：直前の候補指定を取り消す\n\n"
-            "3. 2枚比較\nAlt+2で比較、Alt+1で1枚表示、Alt+3でチェック一覧を開きます。Ctrl＋左右矢印で操作対象を選び、Shift＋左右矢印で選んだ片側だけを前後に移動できます。矢印だけなら両方を移動します。\n［2枚比較］で隣り合う写真を並べます。マウスを置いた側がキー操作の対象になり、枠と『操作対象』を表示します。\n左右クリックで写真を送り、Shift＋左クリックでその側を削除候補にできます。\n［左を固定］で左の写真を残したまま、右の写真だけを送れます。拡大は左右それぞれに操作できます。\n\n"
-            "4. 振り分けキー\nフォルダ一覧で選び［振り分け先に追加］、または［移動先フォルダを追加］から登録します。新しいフォルダでは候補は空で、フォルダごとに保存されます。\n左側の移動先の［設定］→［キーを決める］を選び、使いたいキーを押します。\n他の移動先やアプリの操作に使用中の場合は、別のキーを選ぶよう表示します。\nキーの設定は写真フォルダごとに保存されます。\n\n"
-            "5. チェック一覧\nキーボードでは矢印で写真を選び、Spaceでチェック。Ctrl+Aで表示中すべて、Ctrl+Shift+Aで解除できます。\nカードのどこでもクリックしてチェックできます。離れた写真もそのまま選べます。\n写真をクリックし、別の写真をShift＋クリックすると、その間をまとめてチェックします。\n画像サイズは「小・中・大・特大」から選べます。\nチェック後、［チェックした写真を削除候補に］で一括指定。［チェックした削除候補を解除］または0キーで一括解除。取り消すで元に戻せます。振り分けキーで一括指定もできます。\nチェックはフィルタを変えても保持されます。［解除］で全解除。\n\n"
-            "6. 整理を反映\nCtrl+Enterで確認画面を開けます。候補を付けただけでは元ファイルは変わりません。削除と移動先ごとのタブでサムネイルを選んで大きく確認します。クリックすると候補解除、もう一度クリックで戻せます。解除は［戻る］でも保存されます。\n削除候補はOSのごみ箱へ送ります。ごみ箱が使えない場所ではエラーを表示し、完全削除への切り替えはしません。\n移動・コピーは同名を上書きせず、チェックサムを確認します。コピー設定でも削除候補はごみ箱へ送ります。\n実行後の移動は操作履歴で行き先を、ごみ箱からの復元はOSのごみ箱で確認してください。\n\n"
-            "7. 全画面と保存・再開\n右上の「全画面」またはF11でアプリ全体を全画面にできます。EscまたはF11で戻ります。\n作業状況は自動保存され、再起動時に前のフォルダを開きます。WindowsはPixSortData、Macはユーザーのライブラリ内に保存します。\n左の「設定」から移動先の名前とパスを変更できます。既に付けた候補の行き先は変わりません。\n外部アプリで変更された写真は再指定が必要です。\n\n"
-            "写真・設定・作業データはすべてローカル。ログイン・外部送信・自動更新はありません。"
-        )
-        layout.addWidget(text)
-        layout.addWidget(button("閉じる", dialog.accept, "primary"))
-        dialog.exec()
+        HelpDialog(self).exec()
 
     def show_error(self, message):
         if len(message) < 500:
@@ -2799,7 +2840,8 @@ def main():
         migrated = False
         if (getattr(sys, "frozen", False) and "PIXSORT_DATA_DIR" not in os.environ and "KOMA_DATA_DIR" not in os.environ):
             parent = application_directory().parent
-            for previous in (parent / "PixSort-v0.11-Windows" / "PixSortData",
+            for previous in (parent / "PixSort-v0.12-Windows" / "PixSortData",
+                             parent / "PixSort-v0.11-Windows" / "PixSortData",
                              parent / "Koma-v0.10-Windows" / "KomaData"):
                 if migrate_previous_work(DATA_DIR, previous):
                     migrated = True
