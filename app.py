@@ -26,8 +26,9 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDial
 
 from core import SUPPORTED, Store, apply_decision, fingerprint, is_within
 from photo_tools import PropertyDialog, CropDialog, HelpDialog
+from similar_ui import SimilarDialog
 
-VERSION = "0.13.0"
+VERSION = "0.14.0"
 ASSETS = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets"
 
 
@@ -1006,17 +1007,19 @@ class Window(QMainWindow):
         tools_row = QHBoxLayout()
         self.property_button = button("ⓘ  プロパティ", self.show_properties)
         self.crop_button = button("切り抜き", self.show_crop)
+        self.similar_button = button("似た写真を探す", self.show_similar)
         self.property_button.setToolTip("操作中の写真の情報を表示")
         self.crop_button.setToolTip("操作中の写真を別ファイルに切り抜く")
         tools_row.addWidget(self.property_button)
         tools_row.addWidget(self.crop_button)
+        tools_row.addWidget(self.similar_button)
         tools_row.addStretch()
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["確定時：移動", "確定時：コピー"])
         self.mode_combo.currentIndexChanged.connect(self.mode_changed)
         tools_row.addWidget(self.mode_combo)
         self.toolbar_widgets = [self.filter_combo, self.single_button, self.compare_button,
-                                self.grid_button, self.pin_button, self.property_button, self.crop_button, self.mode_combo]
+                                self.grid_button, self.pin_button, self.property_button, self.crop_button, self.similar_button, self.mode_combo]
         content.addLayout(tools_row)
         info = QHBoxLayout()
         self.file_label = label("フォルダを開いて写真を選びましょう")
@@ -1193,6 +1196,7 @@ class Window(QMainWindow):
                 ("F5", "フォルダを更新", self.refresh_folder),
                 ("Alt+Enter", "プロパティ", self.show_properties),
                 ("Ctrl+Shift+X", "切り抜き", self.show_crop),
+                ("Ctrl+Shift+S", "似た写真を探す", self.show_similar),
                 ("Alt+1", "1枚表示", self.show_single),
                 ("Alt+2", "2枚比較", self.show_compare),
                 ("Alt+3", "チェック一覧", lambda: self.set_view(True)),
@@ -2549,6 +2553,7 @@ class Window(QMainWindow):
         self.refresh_button.setEnabled(self.ready())
         self.property_button.setEnabled(self.ready())
         self.crop_button.setEnabled(self.ready())
+        self.similar_button.setEnabled(self.ready() and len(self.visible) >= 2)
         self.parent_button.setEnabled(self.ready() and Path(self.root).parent != Path(self.root))
         self.folder_list.setEnabled(self.ready())
         self.create_folder_button.setEnabled(self.ready())
@@ -2649,6 +2654,34 @@ class Window(QMainWindow):
             return self.active_path()
         item = self.grid.currentItem()
         return item.data(Qt.ItemDataRole.UserRole) if item else ""
+
+    def show_similar(self):
+        if not self.ready() or len(self.visible) < 2:
+            self.update_footer("似た写真を探すには、表示中の写真が2枚以上必要です。")
+            return
+        dialog = SimilarDialog(self, list(self.visible))
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.chosen_paths:
+            chosen = [path for path in dialog.chosen_paths if path in self.entries
+                      and path not in self.state.get("completed", {})]
+            if not chosen:
+                self.update_footer("選んだ写真は現在のフォルダにありません。")
+                return
+            filter_changed = any(path not in self.visible for path in chosen)
+            if filter_changed:
+                self.filter_combo.setCurrentIndex(0)
+            self.set_view(False)
+            self.position = self.visible.index(chosen[0])
+            self.pinned_path = ""
+            if len(chosen) == 2 and chosen[0] != chosen[1]:
+                self.compare_mode = True
+                self.independent_paths = chosen
+                self.active_side = 0
+            else:
+                self.compare_mode = False
+                self.independent_paths = None
+                self.active_side = 0
+            self.set_view(False)
+            self.update_footer("似た写真から選択しました。" + ("  絞り込みを「すべて」に戻しました。" if filter_changed else ""))
 
     def show_properties(self):
         path = self.selected_photo_path()
@@ -2840,7 +2873,8 @@ def main():
         migrated = False
         if (getattr(sys, "frozen", False) and "PIXSORT_DATA_DIR" not in os.environ and "KOMA_DATA_DIR" not in os.environ):
             parent = application_directory().parent
-            for previous in (parent / "PixSort-v0.12-Windows" / "PixSortData",
+            for previous in (parent / "PixSort-v0.13-Windows" / "PixSortData",
+                             parent / "PixSort-v0.12-Windows" / "PixSortData",
                              parent / "PixSort-v0.11-Windows" / "PixSortData",
                              parent / "Koma-v0.10-Windows" / "KomaData"):
                 if migrate_previous_work(DATA_DIR, previous):

@@ -146,6 +146,96 @@ class WorkflowTests(unittest.TestCase):
         self.assertLessEqual(dialog.height(), 400)
         dialog.close()
 
+    def test_similarity_review_marks_and_clears_only_checked_candidates(self):
+        from similar_ui import SimilarDialog
+        duplicate = self.photos / "DEMO_001_copy.jpg"
+        shutil.copy2(self.photos / "DEMO_001.jpg", duplicate)
+        self.window.refresh_folder()
+        self.wait_for(lambda: not self.window.scanning)
+        original = str((self.photos / "DEMO_001.jpg").resolve())
+        duplicate = str(duplicate.resolve())
+        original_bytes = Path(original).read_bytes(); duplicate_bytes = Path(duplicate).read_bytes()
+        dialog = SimilarDialog(self.window, list(self.window.visible))
+        dialog.show(); dialog.mode.setCurrentIndex(1); dialog.start_search()
+        self.wait_for(lambda: not dialog.running)
+        index = next(i for i,g in enumerate(dialog.groups) if original in g and duplicate in g)
+        dialog.group_list.setCurrentRow(index)
+        self.wait_for(lambda: dialog.items.count() >= 2)
+        for i in range(dialog.items.count()):
+            item = dialog.items.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) in (original, duplicate):
+                item.setCheckState(Qt.CheckState.Checked)
+        self.assertEqual(dialog.checked, {original, duplicate})
+        self.assertTrue(dialog.compare_button.isEnabled())
+        dialog.mark_trash()
+        self.assertEqual(set(self.window.pending()), {original, duplicate})
+        self.assertEqual(Path(original).read_bytes(), original_bytes)
+        self.assertEqual(Path(duplicate).read_bytes(), duplicate_bytes)
+        for i in range(dialog.items.count()):
+            item = dialog.items.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == duplicate: item.setCheckState(Qt.CheckState.Checked)
+        dialog.clear_candidates()
+        self.assertEqual(set(self.window.pending()), {original})
+        self.assertEqual(Path(duplicate).read_bytes(), duplicate_bytes)
+        dialog.reject()
+
+    def test_similarity_card_click_toggles_check_and_keeps_preview(self):
+        from similar_ui import SimilarDialog
+        duplicate = self.photos / "DEMO_001_copy.jpg"
+        shutil.copy2(self.photos / "DEMO_001.jpg", duplicate)
+        self.window.refresh_folder(); self.wait_for(lambda: not self.window.scanning)
+        dialog = SimilarDialog(self.window, list(self.window.visible))
+        dialog.show(); dialog.mode.setCurrentIndex(1); dialog.start_search()
+        self.wait_for(lambda: not dialog.running)
+        self.assertGreater(dialog.items.count(), 0)
+        item = dialog.items.item(0); rect = dialog.items.visualItemRect(item)
+        path = item.data(Qt.ItemDataRole.UserRole)
+        QTest.mouseClick(dialog.items.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+        self.assertIn(path, dialog.checked)
+        self.assertEqual(dialog.items.currentItem(), item)
+        QTest.mouseClick(dialog.items.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+        self.assertNotIn(path, dialog.checked)
+        dialog.reject()
+
+    def test_similar_trash_does_not_replace_existing_destination_when_declined(self):
+        from similar_ui import SimilarDialog
+        from PySide6.QtWidgets import QMessageBox
+        duplicate = self.photos / "DEMO_001_copy.jpg"
+        shutil.copy2(self.photos / "DEMO_001.jpg", duplicate)
+        self.window.refresh_folder(); self.wait_for(lambda: not self.window.scanning)
+        target = str((self.photos / "DEMO_001.jpg").resolve())
+        destination = self.window.state["destinations"][0]["path"]
+        self.window.make_decisions([target], "file", destination)
+        dialog = SimilarDialog(self.window, list(self.window.visible))
+        dialog.show(); dialog.mode.setCurrentIndex(1); dialog.start_search()
+        self.wait_for(lambda: not dialog.running)
+        index = next(i for i,g in enumerate(dialog.groups) if target in g)
+        dialog.group_list.setCurrentRow(index)
+        for i in range(dialog.items.count()):
+            item = dialog.items.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == target: item.setCheckState(Qt.CheckState.Checked)
+        with patch("similar_ui.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
+            dialog.mark_trash()
+        self.assertEqual(self.window.state["decisions"][target]["action"], "file")
+        self.assertIn(target, dialog.checked)
+        dialog.reject()
+
+    def test_similar_two_photo_comparison_restores_filtered_photos(self):
+        self.window.make_decisions([self.paths[0]], "trash")
+        self.window.filter_combo.setCurrentIndex(1)
+        class FakeDialog:
+            chosen_paths = [self.paths[0], self.paths[2]]
+            def __init__(self, *_): pass
+            def exec(self):
+                from PySide6.QtWidgets import QDialog
+                return QDialog.DialogCode.Accepted
+        with patch("app.SimilarDialog", FakeDialog): self.window.show_similar()
+        self.assertEqual(self.window.filter_combo.currentIndex(), 0)
+        self.assertTrue(self.window.compare_mode)
+        self.assertEqual(self.window.independent_paths, [self.paths[0], self.paths[2]])
+        self.assertEqual(self.window.canvas.path, self.paths[0])
+        self.assertEqual(self.window.compare_canvas.path, self.paths[2])
+
     def test_folder_navigation_and_destinations_are_scoped(self):
         nested = self.photos / "既存フォルダ"
         nested.mkdir()
